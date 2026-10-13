@@ -1,0 +1,40 @@
+{
+  "manifest_version": 2,
+  "name": "__MSG_extName__",
+  "description": "__MSG_extDesc__",
+  "version": "1.1.0",
+  "default_locale": "en_US",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "force-youtube-resolution@local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "browser_action": {
+    "default_title": "__MSG_extName__",
+    "default_popup": "popup.html",
+    "browser_style": false,
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "permissions": ["storage", "*://*.youtube.com/*", "*://*.youtube-nocookie.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*", "*://*.youtube-nocookie.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": ["force.js"]
+}

@@ -1,0 +1,65 @@
+{
+  "extName": {
+    "message": "Forzar resolución de YouTube",
+    "description": "Nombre de la extensión."
+  },
+  "extDesc": {
+    "message": "Fija la reproducción de YouTube en una sola resolución. Elige solo entre las que YouTube ofrece, sin valores personalizados.",
+    "description": "Descripción de la extensión."
+  },
+  "nowPlaying": {
+    "message": "Reproduciendo"
+  },
+  "currentQuality": {
+    "message": "Actual"
+  },
+  "forcedQuality": {
+    "message": "Forzada"
+  },
+  "forcedResolution": {
+    "message": "Resolución forzada"
+  },
+  "footnote": {
+    "message": "Se aplica a todas las pestañas y vídeos de YouTube."
+  },
+  "btnApplyNow": {
+    "message": "Aplicar ahora"
+  },
+  "optAuto": {
+    "message": "Automática"
+  },
+  "optAutoDesc": {
+    "message": "YouTube decide"
+  },
+  "optNotOffered": {
+    "message": "no disponible"
+  },
+  "statusNoVideo": {
+    "message": "Ningún vídeo abierto"
+  },
+  "statusUntitled": {
+    "message": "Vídeo de YouTube"
+  },
+  "optForcedLabel": {
+    "message": "Solicitada"
+  },
+  "hintFallback": {
+    "message": "$REQ$p no está disponible aquí · se usa $USED$p",
+    "placeholders": {
+      "req": {
+        "content": "$1",
+        "example": "4320"
+      },
+      "used": {
+        "content": "$2",
+        "example": "1080"
+      }
+    }
+  },
+  "hintNoPlayer": {
+    "message": "Abre un vídeo de YouTube para ver las resoluciones que ofrece."
+  },
+  "hintReload": {
+    "message": "Recarga esa pestaña de YouTube para activar la extensión allí."
+  }
+}

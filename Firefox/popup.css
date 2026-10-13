@@ -1,0 +1,288 @@
+:root {
+  --bg: #14161a;
+  --card: #1d2026;
+  --card-hi: #262a32;
+  --line: #323740;
+  --fg: #e8eaed;
+  --fg-dim: #9aa0a6;
+  --fg-faint: #6b7280;
+  --accent: #ff3b30;
+  --accent-soft: rgba(255, 59, 48, 0.16);
+  --ok: #2ea043;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 316px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------- header ---------------- */
+
+.hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 12px;
+  background: linear-gradient(180deg, #23262d, #1a1d22);
+  border-bottom: 1px solid var(--line);
+}
+
+.hdr-logo {
+  border-radius: 4px;
+  flex: none;
+}
+
+.hdr-title {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--card-hi);
+  border-color: var(--line);
+}
+
+.icon-btn.spin svg {
+  animation: spin 0.7s linear;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------- status card ---------------- */
+
+.card {
+  margin: 10px 12px 0;
+  padding: 10px 11px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.status-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.status-label {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.status-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: var(--card-hi);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.chip-key {
+  color: var(--fg-faint);
+}
+
+.chip-val {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-forced {
+  background: var(--accent-soft);
+  border-color: rgba(255, 59, 48, 0.45);
+}
+
+.chip-forced .chip-key {
+  color: rgba(255, 138, 128, 0.85);
+}
+
+.chip-forced.is-off .chip-val {
+  color: var(--fg-dim);
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.hint[hidden] {
+  display: none;
+}
+
+/* ---------------- picker ---------------- */
+
+.picker {
+  margin: 10px 12px 0;
+  padding: 0;
+  border: 0;
+}
+
+.picker-legend {
+  padding: 0 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Sized so all 11 rows fit without scrolling, while staying well under
+     Chrome's 600px popup height limit. */
+  max-height: 340px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.options::-webkit-scrollbar {
+  width: 6px;
+}
+
+.options::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 9px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.opt:hover {
+  background: var(--card-hi);
+}
+
+.opt input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.opt-name {
+  flex: 1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.opt.is-auto .opt-name {
+  font-weight: 600;
+}
+
+.opt-desc {
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+
+.opt-tag {
+  flex: none;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #ffd9d6;
+  background: var(--accent-soft);
+  border: 1px solid rgba(255, 59, 48, 0.4);
+  border-radius: 4px;
+}
+
+.opt-na {
+  flex: none;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--fg-faint);
+  opacity: 0.75;
+}
+
+.opt.is-active {
+  background: var(--accent-soft);
+  border-color: rgba(255, 59, 48, 0.6);
+}
+
+.opt.is-unavailable .opt-name {
+  color: var(--fg-dim);
+}
+
+/* ---------------- footer ---------------- */
+
+.ftr {
+  padding: 8px 12px 9px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  text-align: center;
+}

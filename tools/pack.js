@@ -1,0 +1,141 @@
+/*
+ * Pack the built extensions into distributable files.
+ *
+ *   node tools/pack.js
+ *
+ * Produces in dist/:
+ *   ...-firefox-<version>.xpi          plain zip, unsigned (temporary install)
+ *   ...-firefox-<version>.zip          same bytes, .zip extension
+ *   ...-chromium-<version>.zip         plain zip (for --load-extension)
+ *   ...-chromium-<id>-<version>.crx    signed CRX3
+ *
+ * The Chromium signing key lives in tools/crx-key.pem and is generated on
+ * first run. Keep it: the extension id is derived from it, so reusing it keeps
+ * the id stable across rebuilds.
+ */
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const { createZip } = require('./zip.cjs');
+const { packCrx3, generateKeyPair, verifyCrx3 } = require('./crx.cjs');
+
+const ROOT = path.join(__dirname, '..');
+const DIST = path.join(ROOT, 'dist');
+const KEY_FILE = path.join(__dirname, 'crx-key.pem');
+const PUB_FILE = path.join(__dirname, 'crx-key.pub.der');
+
+const NAME = 'force-youtube-resolution';
+
+/** Collect a build folder into deterministic, manifest-first entries. */
+function collect(dir) {
+  const files = [];
+  (function walk(rel) {
+    for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const relPath = rel ? path.join(rel, entry.name) : entry.name;
+      if (entry.isDirectory()) walk(relPath);
+      else files.push(relPath);
+    }
+  })('');
+
+  const priority = (p) => {
+    if (p === 'manifest.json') return 0;
+    if (p === 'META-INF/manifest.mf') return 1;
+    if (p === 'META-INF/mozilla.rsa') return 2;
+    if (p === 'META-INF/mozilla.sf') return 3;
+    return 4;
+  };
+
+  files.sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
+
+  return files.map((rel) => ({
+    name: rel.split(path.sep).join('/'),
+    data: fs.readFileSync(path.join(dir, rel)),
+  }));
+}
+
+function readVersion(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
+}
+
+function loadOrCreateKey() {
+  if (fs.existsSync(KEY_FILE)) {
+    const privateKeyPem = fs.readFileSync(KEY_FILE, 'utf8');
+    const publicKeyDer = crypto.createPublicKey(privateKeyPem).export({ type: 'spki', format: 'der' });
+    return { privateKeyPem, publicKeyDer, fresh: false };
+  }
+  const { publicKey, privateKey } = generateKeyPair();
+  fs.writeFileSync(KEY_FILE, privateKey, { mode: 0o600 });
+  fs.writeFileSync(PUB_FILE, publicKey);
+  return { privateKeyPem: privateKey, publicKeyDer: publicKey, fresh: true };
+}
+
+function human(bytes) {
+  return bytes < 1024 ? bytes + ' B' : (bytes / 1024).toFixed(1) + ' KB';
+}
+
+function main() {
+  const chromiumDir = path.join(ROOT, 'Chromium');
+  const firefoxDir = path.join(ROOT, 'Firefox');
+
+  for (const dir of [chromiumDir, firefoxDir]) {
+    if (!fs.existsSync(path.join(dir, 'manifest.json'))) {
+      console.error('missing ' + path.join(dir, 'manifest.json') + ' — run `node build.js` first');
+      process.exit(1);
+    }
+  }
+
+  fs.mkdirSync(DIST, { recursive: true });
+
+  const ffVersion = readVersion(firefoxDir);
+  const crVersion = readVersion(chromiumDir);
+
+  /* ---------------- Firefox ---------------- */
+
+  const ffEntries = collect(firefoxDir);
+  const xpi = createZip(ffEntries);
+  const xpiPath = path.join(DIST, `${NAME}-firefox-${ffVersion}.xpi`);
+  fs.writeFileSync(xpiPath, xpi);
+  fs.writeFileSync(path.join(DIST, `${NAME}-firefox-${ffVersion}.zip`), xpi);
+  console.log(`xpi   ${ffEntries.length} files  ${human(xpi.length)}  ${path.basename(xpiPath)}`);
+  console.log(`      (unsigned — Firefox only installs unsigned XPIs temporarily,`);
+  console.log(`       or permanently on Nightly/Developer/ESR with`);
+  console.log(`       xpinstall.signatures.required=false)`);
+
+  /* ---------------- Chromium ---------------- */
+
+  const crEntries = collect(chromiumDir);
+  const zip = createZip(crEntries);
+  const zipPath = path.join(DIST, `${NAME}-chromium-${crVersion}.zip`);
+  fs.writeFileSync(zipPath, zip);
+  console.log(`\nzip   ${crEntries.length} files  ${human(zip.length)}  ${path.basename(zipPath)}`);
+
+  const key = loadOrCreateKey();
+  if (key.fresh) console.log('\ngenerated a new signing key -> tools/crx-key.pem (keep it: the extension id derives from it)');
+
+  const { crx, id } = packCrx3(zip, key);
+  const crxPath = path.join(DIST, `${NAME}-chromium-${id}-${crVersion}.crx`);
+  fs.writeFileSync(crxPath, crx);
+  console.log(`crx   ${human(crx.length)}  ${path.basename(crxPath)}`);
+  console.log(`      extension id: ${id}`);
+
+  // self-check: parse it back and verify the signature
+  const check = verifyCrx3(fs.readFileSync(crxPath));
+  const ok = check.valid && check.idMatchesHash && check.id === id;
+  console.log(`\nverify  signature=${check.valid ? 'valid' : 'INVALID'}  crxId=${check.idMatchesHash ? 'ok' : 'MISMATCH'}  id=${check.id === id ? 'ok' : 'MISMATCH'}`);
+  if (!ok) {
+    console.error('\nCRX self-check FAILED');
+    process.exit(1);
+  }
+  console.log('CRX self-check passed.');
+
+  console.log(`\ndist/`);
+  for (const f of fs.readdirSync(DIST).sort()) {
+    console.log('  ' + f.padEnd(52) + human(fs.statSync(path.join(DIST, f)).size));
+  }
+}
+
+main();
