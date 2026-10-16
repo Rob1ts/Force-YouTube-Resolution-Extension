@@ -14,6 +14,7 @@ const zlib = require('zlib');
 
 function readZip(buf, dest) {
   fs.mkdirSync(dest, { recursive: true });
+  const destRoot = path.resolve(dest);
 
   let eocd = -1;
   for (let i = buf.length - 22; i >= 0; i--) {
@@ -43,7 +44,11 @@ function readZip(buf, dest) {
       const lextraLen = buf.readUInt16LE(lho + 28);
       const start = lho + 30 + lnameLen + lextraLen;
       const data = buf.subarray(start, start + csize);
-      const target = path.join(dest, name);
+      // Never trust the archive's entry name: `../../x` would escape dest.
+      const target = path.resolve(destRoot, name);
+      if (target !== destRoot && !target.startsWith(destRoot + path.sep)) {
+        throw new Error('unsafe path in archive: ' + name);
+      }
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, method === 0 ? data : zlib.inflateRawSync(data));
       written++;

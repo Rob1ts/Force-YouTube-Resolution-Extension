@@ -15,11 +15,16 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const REPO = process.argv[2] || 'Rob1ts/Force-YouTube-Resolution-Extension';
-const TAG = process.argv[3] || 'v1.1.0';
+const TAG = process.argv[3] || 'v1.1.1';
 const DIST = path.join(__dirname, '..', 'dist');
 const API = 'https://api.github.com';
 
 function getToken() {
+  // Prefer an explicitly scoped token from the environment (e.g. a fine-grained
+  // PAT limited to this repository) over whatever the git credential store
+  // happens to hold.
+  const fromEnv = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const input = 'protocol=https\nhost=github.com\n\n';
   const out = execFileSync('git', ['credential', 'fill'], { input, encoding: 'utf8' });
   for (const line of out.split('\n')) {
@@ -52,7 +57,8 @@ async function api(token, method, url, body, headers = {}) {
   return { status: res.status, json, text };
 }
 
-const BODY = `Pick one resolution and hold it there.
+function releaseBody(version, crxName) {
+  return `Pick one resolution and hold it there.
 
 YouTube's adaptive bitrate decides the resolution on its own, and the same video
 can play at 720p one time and 2160p the next. Setting it from the gear menu
@@ -61,16 +67,35 @@ load, every buffer underrun, and every time the ABR decides to step up.
 
 This extension sets the level once and keeps re-asserting it.
 
+## What changed in ${version}
+
+Security hardening. No new features, and no change to how the extension behaves in
+normal use.
+
+- **Sender validation.** \`bridge.js\` ignores \`runtime.onMessage\` from anything
+  whose sender id is not this extension's own.
+- **YouTube's quality key is owned by the isolated world and matched by exact
+  value.** \`Auto\` removes the entry only while it still holds the exact bytes the
+  extension wrote; if YouTube has since written its own preference it is left
+  alone. The page world no longer deletes the key, and cannot claim that it did.
+- **Window messages are pinned to this origin** instead of \`*\`.
+- **The Chromium signing key no longer lives in the repository**, and the build
+  refuses to run when key material is found in the tree.
+- **Archive extraction is confined to the destination** (Zip-Slip), and the
+  release helper only uploads this project's own assets.
+
 ## Downloads
 
 | File | Browser |
 |---|---|
-| \`force-youtube-resolution-firefox-1.1.0.xpi\` | Firefox (unsigned) |
-| \`force-youtube-resolution-chromium-ID-1.1.0.crx\` | Chrome, Edge, Brave, Opera, Vivaldi, Arc |
-| \`force-youtube-resolution-chromium-1.1.0.zip\` | Chromium — unzip, then *Load unpacked* |
+| \`force-youtube-resolution-firefox-${version}.xpi\` | Firefox (unsigned) |
+| \`${crxName}\` | Chrome, Edge, Brave, Opera, Vivaldi, Arc |
+| \`force-youtube-resolution-chromium-${version}.zip\` | Chromium — unzip, then *Load unpacked* |
+| \`force-youtube-resolution-${version}-source.zip\` | Complete corresponding source (GPL-3.0) |
 
-The \`.crx\` is self-signed with a private key. **Its extension id changed** — any
-build distributed before this release must be removed before installing this one.
+The \`.crx\` is self-signed. The extension id is unchanged since 1.1.0
+(\`imgigdnmkglkofpdomceeenaalemkjdk\`), so this updates in place. Builds older than
+1.1.0 use a different id and must be removed before installing this one.
 
 ## Install
 
@@ -141,7 +166,7 @@ Node 18+, no npm dependencies.
 
 \`\`\`bash
 node build.js               # -> Chromium/ and Firefox/
-node tools/test-content.cjs # 56 assertions
+node tools/test-content.cjs # 69 assertions
 node tools/audit-probe.cjs  # end-to-end reload check
 node tools/pack.js          # -> dist/
 \`\`\`
@@ -153,6 +178,7 @@ GPL-3.0-only. Copyleft — redistribute with the complete corresponding source.
 Not affiliated with, endorsed by, or connected to Google or YouTube. "YouTube" is
 a trademark of Google LLC.
 `;
+}
 
 async function main() {
   let token;
@@ -163,6 +189,9 @@ async function main() {
     process.exit(1);
   }
   console.log('credential obtained (token not displayed)');
+  if (!process.env.GITHUB_TOKEN && !process.env.GH_TOKEN) {
+    console.log('note: using the git credential store; set GITHUB_TOKEN to use a scoped token instead');
+  }
 
   const who = await api(token, 'GET', '/user');
   if (who.status !== 200) {
@@ -171,14 +200,23 @@ async function main() {
   }
   console.log('authenticated as:', who.json.login);
 
+  // Only ever upload this project's own artifacts, and never ship the source
+  // archive for Firefox twice (the .xpi and .zip are byte-identical).
   const assets = fs
     .readdirSync(DIST)
-    .filter((f) => /\.(xpi|crx|zip)$/.test(f) && !/-firefox-.*\.zip$/.test(f))
+    .filter((f) => /^force-youtube-resolution-/.test(f) && /\.(xpi|crx|zip)$/.test(f) && !/-firefox-.*\.zip$/.test(f))
     .sort();
 
-  const crxName = assets.find((f) => f.endsWith('.crx')) || '';
-  const idMatch = crxName.match(/chromium-([a-p]{32})-/);
-  const finalBody = idMatch ? BODY.replace('chromium-ID-1.1.0.crx', crxName) : BODY;
+  if (!assets.length) {
+    console.error('no release assets found in ' + DIST + ' — run `node tools/pack.js` first');
+    process.exit(1);
+  }
+
+  const VERSION = TAG.replace(/^v/, '');
+  const crxName =
+    assets.find((f) => f.endsWith('.crx')) ||
+    `force-youtube-resolution-chromium-ID-${VERSION}.crx`;
+  const finalBody = releaseBody(VERSION, crxName);
 
   // delete a pre-existing release for this tag so re-runs are idempotent
   const existing = await api(token, 'GET', `/repos/${REPO}/releases/tags/${TAG}`);

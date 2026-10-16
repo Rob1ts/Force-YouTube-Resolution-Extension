@@ -7,8 +7,9 @@
  *   1. read/write the chosen resolution in extension storage
  *   2. hand that value to force.js, which runs in the page world
  *   3. relay status from force.js back to the popup
- *   4. remember, across page loads, whether force.js wrote YouTube's
- *      quality key — so switching back to Auto actually cleans up
+ *   4. own the durable side of YouTube's quality key: record exactly what the
+ *      engine wrote and remove it again on Auto — and only while the entry
+ *      still holds that exact value
  *
  * There is no script injection here: both browsers declare force.js as a
  * world:"MAIN" content script, so nothing is web-accessible and no site can
@@ -17,10 +18,10 @@
  * Bridge <-> engine messaging uses window.postMessage with a { fyr: 'fyr', ... }
  * envelope. Isolated and main worlds share one window, so a page script can
  * observe and forge these — that is inherent to operating in the page world,
- * not something this channel can fix. Nothing here is privileged: the page can
- * already call movie_player.setPlaybackQuality() itself. The forged-message
- * surface is kept to read-only (status), and the popup treats storage as the
- * authority for the forced setting.
+ * not something this channel can fix. The design keeps that harmless: every
+ * decision that touches durable state (what is stored, and when YouTube's
+ * quality key is removed) is taken in *this* isolated world. The page world is
+ * treated as untrusted input throughout.
  */
 
 (() => {
@@ -33,6 +34,11 @@
   const API = typeof browser !== 'undefined' && browser.runtime ? browser : chrome;
   const NS = 'fyr';
   const AUTO = 'auto';
+  const LS_KEY = 'yt-player-quality';
+  // Same-window messages only; pin the target origin instead of '*'. Falls back
+  // to '*' only where the origin is opaque (never the case on YouTube).
+  const ORIGIN =
+    typeof location !== 'undefined' && location.origin ? location.origin : '*';
 
   // Only YouTube's own quality labels may ever be stored. This is what stops a
   // custom resolution from being forced: there is no way to express one.
@@ -54,6 +60,7 @@
 
   let forced = AUTO;
   let wroteLS = false;
+  let ytWritten = null;
   let engineReady = false;
   let lastStatus = null;
   let lastStatusAt = 0;
@@ -105,13 +112,46 @@
 
   const toEngine = (msg) => {
     try {
-      window.postMessage(Object.assign({ fyr: NS }, msg), '*');
+      window.postMessage(Object.assign({ fyr: NS }, msg), ORIGIN);
     } catch (_) {}
   };
 
   function pushSetting() {
     if (!engineReady) return;
-    toEngine({ cmd: 'set', quality: forced, wrote: wroteLS });
+    toEngine({ cmd: 'set', quality: forced });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * YouTube's quality key — owned by the isolated world
+   * ------------------------------------------------------------------ */
+
+  function lsGet() {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function lsRemove() {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(LS_KEY);
+    } catch (_) {}
+  }
+
+  /**
+   * Remove the entry the engine wrote, but only while it still holds exactly
+   * that value. If YouTube (or the page) has since written its own preference,
+   * the entry is left alone. The page world never deletes it, so a forged
+   * "wrote" message cannot make the extension drop a key YouTube owns.
+   */
+  function clearStaleOverride() {
+    if (!wroteLS) return;
+    const current = lsGet();
+    if (current !== null && current === ytWritten) lsRemove();
+    wroteLS = false;
+    ytWritten = null;
+    store.set({ wroteLS: false, ytWritten: null });
   }
 
   function flushPendingStatus() {
@@ -133,20 +173,16 @@
       engineReady = true;
       pushSetting();
       toEngine({ cmd: 'status' });
+      if (forced === AUTO) clearStaleOverride();
       return;
     }
     if (data.evt === 'wrote') {
-      // Reported by the engine after it writes YouTube's quality key.
-      if (!wroteLS) {
+      // The engine reports the exact value it persisted. Only a bounded string
+      // is accepted, and it is matched against localStorage at cleanup time.
+      if (typeof data.value === 'string') {
         wroteLS = true;
-        store.set({ wroteLS: true });
-      }
-      return;
-    }
-    if (data.evt === 'cleared') {
-      if (wroteLS) {
-        wroteLS = false;
-        store.set({ wroteLS: false });
+        ytWritten = data.value;
+        store.set({ wroteLS: true, ytWritten: data.value });
       }
       return;
     }
@@ -162,6 +198,8 @@
    * ------------------------------------------------------------------ */
 
   API.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // Only this extension's own contexts (the popup) may drive the bridge.
+    if (!sender || sender.id !== API.runtime.id) return false;
     if (!msg || typeof msg !== 'object' || msg.fyr !== NS) return false;
 
     if (msg.cmd === 'status') {
@@ -184,10 +222,11 @@
       forced = normalize(msg.quality);
       store.set({ forcedQuality: forced });
       if (engineReady) {
-        toEngine({ cmd: 'set', quality: forced, wrote: wroteLS });
+        toEngine({ cmd: 'set', quality: forced });
         setTimeout(() => toEngine({ cmd: 'status' }), 250);
       }
       sendResponse({ ok: true, quality: forced });
+      if (forced === AUTO) clearStaleOverride();
       return false;
     }
 
@@ -206,20 +245,23 @@
 
   API.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.wroteLS) {
-      wroteLS = changes.wroteLS.newValue === true;
-      // Push the new flag through so the engine can clean up correctly.
-      pushSetting();
-      return;
+    if (changes.wroteLS) wroteLS = changes.wroteLS.newValue === true;
+    if (changes.ytWritten) {
+      ytWritten = typeof changes.ytWritten.newValue === 'string' ? changes.ytWritten.newValue : null;
     }
     if (!changes.forcedQuality) return;
     forced = normalize(changes.forcedQuality.newValue);
     pushSetting();
+    if (forced === AUTO) clearStaleOverride();
   });
 
-  store.get({ forcedQuality: AUTO, wroteLS: false }).then((data) => {
+  store.get({ forcedQuality: AUTO, wroteLS: false, ytWritten: null }).then((data) => {
     forced = normalize(data.forcedQuality);
     wroteLS = data.wroteLS === true;
+    ytWritten = typeof data.ytWritten === 'string' ? data.ytWritten : null;
     pushSetting();
+    // Returning to an Auto profile still removes the override the extension
+    // left behind — but only while it is still the value the engine wrote.
+    if (forced === AUTO) clearStaleOverride();
   });
 })();

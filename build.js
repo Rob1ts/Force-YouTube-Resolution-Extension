@@ -195,6 +195,47 @@ function assertLocales() {
 
 assertLaddersMatch();
 assertLocales();
+assertNoSecrets();
+
+/** Fail the build rather than let signing material live in the repository. */
+function assertNoSecrets() {
+  const skipDirs = new Set(['.git', 'node_modules', 'dist', 'Chromium', 'Firefox', 'preview', 'unpacked']);
+  const binary = /\.(png|jpg|jpeg|gif|ico|zip|crx|xpi|woff2?|ttf)$/i;
+  const problems = [];
+
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!skipDirs.has(entry.name)) walk(p);
+        continue;
+      }
+      const rel = path.relative(ROOT, p);
+      if (/\.(pem|key|p12|pfx)$/i.test(entry.name)) {
+        problems.push(`${rel} (private key material)`);
+        continue;
+      }
+      if (/\.der$/i.test(entry.name) && !/\.pub\.der$/i.test(entry.name)) {
+        problems.push(`${rel} (key material)`);
+        continue;
+      }
+      if (binary.test(entry.name)) continue;
+      try {
+        if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(fs.readFileSync(p, 'utf8'))) {
+          problems.push(`${rel} (embedded private key)`);
+        }
+      } catch (_) {}
+    }
+  })(ROOT);
+
+  if (problems.length) {
+    console.error('build.js: refusing to build — secret material found in the tree:');
+    for (const p of problems) console.error('  - ' + p);
+    console.error('  Move it outside the repository (tools/pack.js reads FYR_CRX_KEY or the OS config dir).');
+    process.exit(1);
+  }
+  console.log('secrets ok (no private key material in the tree)');
+}
 
 const targets = [
   ['Chromium', 'manifest.chromium.json'],

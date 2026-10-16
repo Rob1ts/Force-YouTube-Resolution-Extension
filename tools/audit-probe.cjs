@@ -1,7 +1,10 @@
 /*
- * End-to-end probe for the finding that motivated the hardening:
- * setting the extension back to "Auto" must remove the yt-player-quality
- * entry, even across a page reload.
+ * End-to-end probe for the hardened cleanup path.
+ *
+ * The page-world engine writes YouTube's quality key and reports the exact
+ * value. The isolated bridge records it, and on Auto removes it again — but
+ * only while the entry still holds that exact value, so a value the extension
+ * did not write (including one a page forged) is never touched.
  *
  *   node tools/audit-probe.cjs
  */
@@ -12,108 +15,159 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const SRC = path.join(__dirname, '..', 'src', 'force.js');
+const SRC = path.join(__dirname, '..', 'src', 'bridge.js');
 const NS = 'fyr';
 const LS_KEY = 'yt-player-quality';
 
-/** Boot force.js against a fake player and a shared localStorage (simulating
- *  one youtube.com origin persisting across page loads). */
-function boot(sharedStorage, forced, wrote) {
-  const listeners = new Map();
-  const timers = [];
+/** Boot bridge.js against a shared localStorage and a fake extension storage. */
+function boot(sharedStorage, storeData) {
+  const winListeners = new Map();
+  const messageListeners = [];
+  const storageChangeListeners = [];
 
-  const player = {
-    isConnected: true,
-    dataset: {},
-    _available: ['hd1080', 'hd720', 'large'],
-    _current: 'hd720',
-    getAvailableQualityLevels() { return this._available.slice(); },
-    getPlaybackQuality() { return this._current; },
-    setPlaybackQuality(q) { this._current = q; },
-    setPlaybackQualityRange() {},
-    addEventListener() {},
-    removeEventListener() {},
+  const chromeMock = {
+    runtime: {
+      id: 'probe',
+      lastError: null,
+      onMessage: { addListener: (fn) => messageListeners.push(fn) },
+    },
+    storage: {
+      local: {
+        get(defaults, cb) {
+          const out = {};
+          for (const k of Object.keys(defaults)) out[k] = k in storeData ? storeData[k] : defaults[k];
+          cb(out);
+        },
+        set(obj, cb) {
+          const changes = {};
+          for (const k of Object.keys(obj)) {
+            changes[k] = { oldValue: storeData[k], newValue: obj[k] };
+            storeData[k] = obj[k];
+          }
+          cb && cb();
+          for (const fn of storageChangeListeners) fn(changes, 'local');
+        },
+      },
+      onChanged: { addListener: (fn) => storageChangeListeners.push(fn) },
+    },
   };
 
   const sandbox = {
-    window: {
-      addEventListener(t, f) { if (!listeners.has(t)) listeners.set(t, []); listeners.get(t).push(f); },
-      postMessage() {},
-    },
-    document: {
-      visibilityState: 'visible',
-      documentElement: { addEventListener() {}, removeEventListener() {} },
-      getElementById: (id) => (id === 'movie_player' ? player : null),
-      querySelector: () => null,
-      addEventListener() {},
-    },
+    chrome: chromeMock,
     localStorage: {
       getItem: (k) => (k in sharedStorage ? sharedStorage[k] : null),
-      setItem: (k, v) => { sharedStorage[k] = String(v); },
-      removeItem: (k) => { delete sharedStorage[k]; },
+      setItem: (k, v) => {
+        sharedStorage[k] = String(v);
+      },
+      removeItem: (k) => {
+        delete sharedStorage[k];
+      },
     },
-    location: { pathname: '/watch' },
-    MutationObserver: class { observe() {} },
-    addEventListener(t, f) { if (!listeners.has(t)) listeners.set(t, []); listeners.get(t).push(f); },
-    setInterval(fn) { timers.push(fn); return timers.length; },
-    clearInterval() {},
-    setTimeout, clearTimeout,
-    console, Promise, Object, Array, JSON, Math, Date, String, Number, Symbol,
+    document: {
+      documentElement: { appendChild() {} },
+      createElement: () => ({ dataset: {} }),
+      addEventListener() {},
+    },
+    window: {
+      addEventListener(type, fn) {
+        if (!winListeners.has(type)) winListeners.set(type, []);
+        winListeners.get(type).push(fn);
+      },
+      postMessage() {},
+    },
+    setTimeout,
+    clearTimeout,
+    console,
+    Promise,
+    Object,
+    Array,
+    JSON,
+    Math,
+    Date,
+    String,
+    Number,
+    Set,
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(SRC, 'utf8'), sandbox, { filename: 'force.js' });
+  vm.runInContext(fs.readFileSync(SRC, 'utf8'), sandbox, { filename: 'bridge.js' });
+
+  const fromEngine = (data) => {
+    for (const fn of (winListeners.get('message') || []).slice()) {
+      fn({ source: sandbox.window, data });
+    }
+  };
 
   return {
-    deliver: (cmd, quality, wroteFlag) => {
-      const data = { fyr: NS, cmd, quality, wrote: wroteFlag };
-      for (const f of (listeners.get('message') || []).slice()) {
-        f({ source: sandbox.window, data });
-      }
+    ready: () => fromEngine({ fyr: NS, evt: 'ready' }),
+    wrote: (value) => fromEngine({ fyr: NS, evt: 'wrote', value }),
+    apply: (quality) => {
+      for (const fn of messageListeners) fn({ fyr: NS, cmd: 'apply', quality }, { id: 'probe' }, () => {});
     },
   };
 }
 
-const flush = (ms = 800) => new Promise((r) => setTimeout(r, ms));
+const flush = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  console.log('probe: clearing the extension override when set back to Auto\n');
+  console.log('probe: the isolated bridge owns the yt-player-quality cleanup\n');
 
+  const value = JSON.stringify({
+    data: JSON.stringify({ quality: 1080, previousQuality: 1080 }),
+    creation: 1,
+    expiration: 2,
+  });
+
+  // Session 1: user forces 1080p. The engine writes the entry and says so.
   const origin = {};
-
-  // Session 1: user forces 1080p.
-  const s1 = boot(origin, 'hd1080', false);
-  s1.deliver('set', 'hd1080', false);
+  const s1 = { forcedQuality: 'auto', wroteLS: false, ytWritten: null };
+  const b1 = boot(origin, s1);
   await flush();
-  const afterForce = LS_KEY in origin;
-  console.log(`  session 1, forced 1080p        -> key present: ${afterForce}`);
+  b1.ready();
+  origin[LS_KEY] = value;
+  b1.wrote(value);
+  await flush();
+  const afterForce = LS_KEY in origin && s1.wroteLS === true;
+  console.log(`  session 1, forced 1080p        -> key present: ${LS_KEY in origin}, recorded: ${s1.wroteLS}`);
   if (!afterForce) {
-    console.log('  (nothing written; probe inconclusive)');
+    console.log('  (nothing recorded; probe inconclusive)');
     process.exit(1);
   }
 
-  // Session 2: reload. bridge.js seeds wrote=true from extension storage.
-  const s2 = boot(origin, 'auto', true);
-  s2.deliver('set', 'auto', true);
+  // Session 2: reload, the user is back on Auto. The bridge must remove it.
+  const s2 = { forcedQuality: 'auto', wroteLS: true, ytWritten: value };
+  boot(origin, s2);
   await flush();
   const stale = LS_KEY in origin;
   console.log(`  session 2, set back to Auto    -> key present: ${stale}`);
 
-  // Session 3: never forced in this browser profile; must NOT touch YouTube's
-  // own preference key.
+  // Session 3: never forced; YouTube's own preference must survive.
   const other = { [LS_KEY]: '{"quality":720,"previousQuality":720}' };
-  const s3 = boot(other, 'auto', false);
-  s3.deliver('set', 'auto', false);
+  const s3 = { forcedQuality: 'auto', wroteLS: false, ytWritten: null };
+  boot(other, s3);
   await flush();
   const preserved = LS_KEY in other;
   console.log(`  untouched YouTube preference   -> key preserved: ${preserved}`);
 
+  // Session 4: a forged "wrote" naming a value that is not the stored entry
+  // must not authorise deleting YouTube's key.
+  const real = { [LS_KEY]: '{"quality":720,"previousQuality":720}' };
+  const s4 = { forcedQuality: 'auto', wroteLS: false, ytWritten: null };
+  const b4 = boot(real, s4);
+  await flush();
+  b4.ready();
+  b4.wrote('{"forged":true}');
+  b4.apply('auto');
+  await flush();
+  const survived = LS_KEY in real;
+  console.log(`  forged "wrote" + Auto          -> key preserved: ${survived}`);
+
   console.log('');
-  const pass = !stale && preserved;
+  const pass = !stale && preserved && survived;
   if (pass) {
     console.log('  RESULT: PASS');
-    console.log('  Auto clears our own override after a reload, and never');
-    console.log('  deletes a key the extension did not write.');
+    console.log('  Auto clears exactly the entry the extension wrote, across a reload,');
+    console.log('  and never removes a value the extension did not write.');
     process.exit(0);
   }
   console.log('  RESULT: FAIL');

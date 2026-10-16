@@ -172,10 +172,6 @@ function bootEngine({
       if (quality !== undefined) data.quality = quality;
       deliver({ source: sandbox.window, data });
     },
-    // As bridge.js sends it: carries the durable "we wrote this" flag.
-    fromBridgeWrote: (cmd, quality, wrote) => {
-      deliver({ source: sandbox.window, data: { fyr: NS, cmd, quality, wrote } });
-    },
     lastStatus() {
       const msgs = posted.filter((m) => m.evt === 'status');
       return msgs.length ? msgs[msgs.length - 1].status : null;
@@ -187,8 +183,8 @@ function bootEngine({
  * bridge.js — ISOLATED world bridge
  * ================================================================== */
 
-function bootBridge({ forced = 'auto', isFirefox = true, wroteLS = false } = {}) {
-  const storeData = { forcedQuality: forced, wroteLS };
+function bootBridge({ forced = 'auto', isFirefox = true, wroteLS = false, ytWritten = null, localStorageData = {} } = {}) {
+  const storeData = { forcedQuality: forced, wroteLS, ytWritten };
   const storageWrites = [];
   const winListeners = new Map();
   const toEngine = [];
@@ -229,6 +225,15 @@ function bootBridge({ forced = 'auto', isFirefox = true, wroteLS = false } = {})
 
   const sandbox = {
     chrome: chromeMock,
+    localStorage: {
+      getItem: (k) => (k in localStorageData ? localStorageData[k] : null),
+      setItem: (k, v) => {
+        localStorageData[k] = String(v);
+      },
+      removeItem: (k) => {
+        delete localStorageData[k];
+      },
+    },
     document: {
       documentElement: { appendChild: (el) => injected.push(el) },
       createElement: (tag) => ({ tagName: String(tag).toUpperCase(), dataset: {}, src: '' }),
@@ -269,17 +274,18 @@ function bootBridge({ forced = 'auto', isFirefox = true, wroteLS = false } = {})
     storageWrites,
     toEngine,
     injected,
+    localStorageData,
     fromEngine,
     fromStorage: (value) => {
       for (const fn of storageChangeListeners) {
         fn({ forcedQuality: { oldValue: storeData.forcedQuality, newValue: value } }, 'local');
       }
     },
-    ask: (msg) => {
+    ask: (msg, sender = { id: 'test' }) => {
       let out;
       let async_ = false;
       for (const fn of messageListeners) {
-        const r = fn(msg, {}, (res) => {
+        const r = fn(msg, sender, (res) => {
           out = res;
         });
         if (r === true) async_ = true;
@@ -359,7 +365,7 @@ async function main() {
     ok('only offered labels used', requested.every((q) => h.player._available.includes(q)), JSON.stringify(requested));
   }
 
-  console.log('\n [5] Auto hands control back to YouTube');
+  console.log('\n [5] Auto stops forcing and leaves cleanup to the bridge');
   {
     const h = bootEngine({ available: ['hd1080', 'hd720'], current: 'hd720' });
     h.fromBridge('set', 'hd1080');
@@ -367,10 +373,31 @@ async function main() {
     ok('forced first', h.player.calls.length > 0);
     h.localStorageData['yt-player-quality'] = '{"stale":true}';
     h.player.calls.length = 0;
+    h.posted.length = 0;
     h.fromBridge('set', 'auto');
     await flush();
     eq('no calls in auto mode', h.player.calls, []);
-    ok('our localStorage override removed', !('yt-player-quality' in h.localStorageData));
+    ok('the page world never removes the key itself', 'yt-player-quality' in h.localStorageData);
+    ok('and emits no "cleared" event', !h.posted.some((m) => m.evt === 'cleared'));
+  }
+
+  console.log('\n [5b] re-forcing after Auto rewrites the key (gear menu stays in sync)');
+  {
+    const h = bootEngine({ available: ['hd1080', 'hd720'], current: 'hd720' });
+    h.fromBridge('set', 'hd1080');
+    await flush();
+    ok('written on the first force', 'yt-player-quality' in h.localStorageData);
+
+    // The bridge removes the entry when the user switches to Auto.
+    delete h.localStorageData['yt-player-quality'];
+    h.fromBridge('set', 'auto');
+    await flush();
+    h.posted.length = 0;
+
+    h.fromBridge('set', 'hd1080');
+    await flush();
+    ok('re-forcing re-creates the key', 'yt-player-quality' in h.localStorageData);
+    ok('and reports the new write to the bridge', h.posted.some((m) => m.evt === 'wrote'));
   }
 
   console.log('\n [6] re-asserts, and stays quiet when already correct');
@@ -477,6 +504,17 @@ async function main() {
     ok('status relayed to the popup', st.out && st.out.hasPlayer === true, JSON.stringify(st.out));
   }
 
+  console.log('\n [12a] rejects messages from another extension');
+  {
+    const b = bootBridge({ forced: 'auto' });
+    await flush(50);
+    b.fromEngine({ fyr: NS, evt: 'ready' });
+    const evil = b.ask({ fyr: NS, cmd: 'apply', quality: 'hd2160' }, { id: 'some-other-extension' });
+    eq('no response to a foreign sender', evil.out, undefined);
+    eq('stored setting unchanged', b.storeData.forcedQuality, 'auto');
+    ok('engine not told to change', !b.toEngine.some((m) => m.cmd === 'set' && m.quality === 'hd2160'));
+  }
+
   console.log('\n [13] caches a fresh status for quick popup opens');
   {
     const b = bootBridge({ forced: 'auto' });
@@ -500,33 +538,32 @@ async function main() {
     }
   }
 
-  console.log('\n [14b] persists and relays the durable wroteLS flag');
+  console.log('\n [14b] sends the setting without any page-forgeable flag');
   {
-    const b = bootBridge({ forced: 'auto', wroteLS: true });
+    const b = bootBridge({ forced: 'hd720' });
     await flush(50);
     b.fromEngine({ fyr: NS, evt: 'ready' });
-    const set = b.toEngine.find((m) => m.cmd === 'set');
-    ok('seeds the engine with wroteLS from storage', set && set.wrote === true, JSON.stringify(set));
-
-    const b2 = bootBridge({ forced: 'auto', wroteLS: false });
     await flush(50);
-    b2.fromEngine({ fyr: NS, evt: 'ready' });
-    const set2 = b2.toEngine.find((m) => m.cmd === 'set');
-    ok('seeds wroteLS=false when nothing was written', set2 && set2.wrote === false, JSON.stringify(set2));
+    const set = b.toEngine.find((m) => m.cmd === 'set');
+    ok('sends the stored setting on ready', set && set.quality === 'hd720', JSON.stringify(b.toEngine));
+    ok('the set command carries no "wrote" flag', set && !('wrote' in set), JSON.stringify(set));
   }
 
-  console.log('\n [14c] stores the flag when the engine reports a write');
+  console.log('\n [14c] records a genuine write by exact value and cleans it up');
   {
-    const b = bootBridge({ forced: 'hd1080', wroteLS: false });
+    const origin = {};
+    const b = bootBridge({ forced: 'hd1080', wroteLS: false, localStorageData: origin });
     await flush(50);
     b.fromEngine({ fyr: NS, evt: 'ready' });
-    b.fromEngine({ fyr: NS, evt: 'wrote' });
+    origin['yt-player-quality'] = '{"quality":1080}';
+    b.fromEngine({ fyr: NS, evt: 'wrote', value: '{"quality":1080}' });
     await flush(50);
     ok('wroteLS persisted to true', b.storeData.wroteLS === true, JSON.stringify(b.storeData));
+    ok('the exact written value is persisted', b.storeData.ytWritten === '{"quality":1080}', JSON.stringify(b.storeData));
 
-    b.fromEngine({ fyr: NS, evt: 'cleared' });
+    b.ask({ fyr: NS, cmd: 'apply', quality: 'auto' });
     await flush(50);
-    ok('wroteLS persisted back to false', b.storeData.wroteLS === false, JSON.stringify(b.storeData));
+    ok('a value the extension wrote is removed on Auto', !('yt-player-quality' in origin), JSON.stringify(Object.keys(origin)));
   }
 
   console.log('\n [15] ignores foreign postMessage traffic');
@@ -549,44 +586,42 @@ async function main() {
     ok('the real bridge message is accepted', h.player.calls.some((c) => c[1] === 'hd1080'));
   }
 
-  console.log('\n [16] REGRESSION: Auto clears YouTube override across a reload');
+  console.log('\n [16] REGRESSION: Auto clears the engine override across a reload');
   {
-    // Regression for the stale-override bug: lastPersisted resets to null on
-    // every page load, so the cleanup used to be skipped and YouTube kept
-    // honouring a setting the user had already turned off.
-    const origin = {}; // shared youtube.com localStorage across "sessions"
-    const s1 = bootEngine({ available: ['hd1080', 'hd720'], storage: origin });
-    s1.fromBridge('set', 'hd1080');
+    // The engine writes the key and reports the exact value; the isolated
+    // bridge records it. On the next load the bridge removes it from storage.
+    const origin = {};
+    const engine = bootEngine({ available: ['hd1080', 'hd720'], storage: origin });
+    engine.fromBridge('set', 'hd1080');
     await flush();
-    ok('session 1 wrote yt-player-quality', 'yt-player-quality' in origin);
+    const wrote = engine.posted.filter((m) => m.evt === 'wrote').pop();
+    ok('engine wrote yt-player-quality', 'yt-player-quality' in origin);
+    ok('engine reported the exact value it wrote', !!wrote && wrote.value === origin['yt-player-quality'], JSON.stringify(wrote));
+    ok('engine does not remove the key itself', 'yt-player-quality' in origin);
 
-    // Browser restarts. bridge.js seeds the engine from extension storage.
-    const s2 = bootEngine({ available: ['hd1080', 'hd720'], storage: origin });
-    s2.fromBridgeWrote('set', 'auto', true);
-    await flush();
-    ok('session 2 with Auto removes the stale override', !('yt-player-quality' in origin), JSON.stringify(Object.keys(origin)));
+    // Browser restarts. The bridge knows we wrote it and holds the value.
+    const b = bootBridge({ forced: 'auto', wroteLS: true, ytWritten: origin['yt-player-quality'], localStorageData: origin });
+    await flush(50);
+    ok('bridge removes the stale override on boot', !('yt-player-quality' in origin), JSON.stringify(Object.keys(origin)));
   }
 
   console.log('\n [17] REGRESSION: does not delete a key it never wrote');
   {
-    const origin = {};
-    const h = bootEngine({ available: ['hd1080', 'hd720'], storage: origin });
-    h.fromBridgeWrote('set', 'auto', false);
-    await flush();
-    ok('no removal attempted when wroteLS is false', true);
+    const origin = { 'yt-player-quality': '{"quality":720,"previousQuality":720}' };
+    const b = bootBridge({ forced: 'auto', wroteLS: false, localStorageData: origin });
+    await flush(50);
+    ok('YouTube\'s own preference is preserved', 'yt-player-quality' in origin, JSON.stringify(Object.keys(origin)));
   }
 
-  console.log('\n [18] engine reports writes so the bridge can persist the flag');
+  console.log('\n [18] engine reports the exact value it wrote, never a cleanup');
   {
     const h = bootEngine({ available: ['hd1080', 'hd720'] });
     h.fromBridge('set', 'hd1080');
     await flush();
-    ok('posted a "wrote" event after persisting', h.posted.some((m) => m.evt === 'wrote'));
-
-    h.posted.length = 0;
-    h.fromBridge('set', 'auto');
-    await flush();
-    ok('posted a "cleared" event after cleanup', h.posted.some((m) => m.evt === 'cleared'));
+    const wrote = h.posted.filter((m) => m.evt === 'wrote').pop();
+    ok('posted a "wrote" event after persisting', !!wrote);
+    ok('the event carries the raw value it stored', !!wrote && wrote.value === h.localStorageData['yt-player-quality']);
+    ok('the engine never claims to clear YouTube\'s key', !h.posted.some((m) => m.evt === 'cleared'));
   }
 
   console.log('\n [19] REGRESSION: no page-visible global for the load guard');
@@ -608,20 +643,31 @@ async function main() {
     eq('no __-prefixed globals', globals, []);
   }
 
-  console.log('\n [21] REGRESSION: forged "wrote" cannot make Auto skip cleanup');
+  console.log('\n [21] REGRESSION: forged "wrote" cannot make the bridge drop a key it did not write');
   {
-    // A page can forge evt:"wrote". Worst case that flips the flag to true,
-    // which only causes a harmless removeItem of a key that may not exist —
-    // it must never cause a key to be LEFT BEHIND.
-    const origin = { 'yt-player-quality': '{"stale":true}' };
-    const b = bootBridge({ forced: 'auto', wroteLS: false });
+    // A page can forge evt:"wrote". The bridge only ever persists a bounded
+    // string, and cleanup removes an entry only while it still holds exactly
+    // that value. A forged marker therefore cannot authorise deleting
+    // YouTube's real preference.
+    const origin = { 'yt-player-quality': '{"quality":720,"previousQuality":720}' };
+    const b = bootBridge({ forced: 'auto', wroteLS: false, localStorageData: origin });
     await flush(50);
     b.fromEngine({ fyr: NS, evt: 'ready' });
-    b.fromEngine({ fyr: NS, evt: 'wrote' });
+    b.fromEngine({ fyr: NS, evt: 'wrote', value: '{"forged":true}' });
     await flush(50);
-    const last = b.toEngine.filter((m) => m.cmd === 'set').pop();
-    ok('re-pushes the setting with wrote=true', last && last.wrote === true, JSON.stringify(b.toEngine));
-    ok('and the stale key is still present for the engine to remove', 'yt-player-quality' in origin);
+    ok('the forged marker is recorded', b.storeData.wroteLS === true && b.storeData.ytWritten === '{"forged":true}');
+    ok('but YouTube\'s key is untouched so far', 'yt-player-quality' in origin);
+
+    b.ask({ fyr: NS, cmd: 'apply', quality: 'auto' });
+    await flush(50);
+    ok('cleanup leaves a value it did not write', 'yt-player-quality' in origin, JSON.stringify(Object.keys(origin)));
+
+    // And a "wrote" with a non-string payload is ignored outright.
+    const b2 = bootBridge({ forced: 'hd1080', wroteLS: false });
+    await flush(50);
+    b2.fromEngine({ fyr: NS, evt: 'wrote', value: { evil: true } });
+    await flush(50);
+    ok('non-string "wrote" payloads are ignored', b2.storeData.wroteLS === false, JSON.stringify(b2.storeData));
   }
 
   console.log(`\n${passed} passed, ${failed} failed\n`);

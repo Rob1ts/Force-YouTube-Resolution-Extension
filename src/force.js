@@ -56,6 +56,10 @@
   const LS_KEY = 'yt-player-quality';
   const LS_TTL = 31104000; // 8.6 h, mirrors YouTube's own preference window
   const POLL_MS = 1200;
+  // Same-window messages only; pin the target origin instead of '*'. Falls back
+  // to '*' only where the origin is opaque (never the case on YouTube).
+  const ORIGIN =
+    typeof location !== 'undefined' && location.origin ? location.origin : '*';
 
   /* ------------------------------------------------------------------ *
    * Runtime state
@@ -66,14 +70,6 @@
   let detachFns = [];
   let lastApplied = null;
   let lastPersisted = null;
-  /**
-   * True when this extension has written `yt-player-quality` and has not yet
-   * removed it. Seeded by bridge.js from extension storage, because a page
-   * reload resets every in-memory variable — without that, switching to Auto
-   * after a restart would leave the override behind and YouTube would keep
-   * honouring it forever.
-   */
-  let wroteLS = false;
   let applyTimer = null;
   let missCount = 0;
 
@@ -96,7 +92,7 @@
 
   const post = (msg) => {
     try {
-      window.postMessage(msg, '*');
+      window.postMessage(msg, ORIGIN);
     } catch (_) {}
   };
 
@@ -212,33 +208,20 @@
     if (!height || lastPersisted === target) return;
     try {
       const now = Date.now();
-      localStorage.setItem(
-        LS_KEY,
-        JSON.stringify({
-          data: JSON.stringify({ quality: height, previousQuality: height }),
-          creation: now,
-          expiration: now + LS_TTL,
-        })
-      );
+      const raw = JSON.stringify({
+        data: JSON.stringify({ quality: height, previousQuality: height }),
+        creation: now,
+        expiration: now + LS_TTL,
+      });
+      localStorage.setItem(LS_KEY, raw);
       lastPersisted = target;
-      wroteLS = true;
-      // Tell the bridge so the fact survives a reload and a switch to Auto.
-      post({ fyr: NS, evt: 'wrote' });
+      // Hand the exact bytes to the isolated bridge so it is the only place
+      // that decides when the entry may be removed again. The page world never
+      // deletes YouTube's key itself.
+      post({ fyr: NS, evt: 'wrote', value: raw });
     } catch (_) {
       /* storage may be blocked; forcing still works for the session */
     }
-  }
-
-  function clearYouTubeOverride() {
-    // `wroteLS` is the durable signal — `lastPersisted` alone is null on a
-    // fresh page load and would make us skip the cleanup entirely.
-    if (lastPersisted === null && !wroteLS) return;
-    lastPersisted = null;
-    wroteLS = false;
-    try {
-      localStorage.removeItem(LS_KEY);
-    } catch (_) {}
-    post({ fyr: NS, evt: 'cleared' });
   }
 
   function scheduleApply(delay) {
@@ -253,8 +236,10 @@
     const el = bind();
     if (!el) return null;
     if (forced === AUTO) {
-      clearYouTubeOverride();
       lastApplied = null;
+      // The bridge owns removal of the key; forget what we wrote so a later
+      // force re-creates it (and re-reports it) even for the same level.
+      lastPersisted = null;
       return null;
     }
     const target = resolveTarget(el, forced);
@@ -329,14 +314,13 @@
    * Settings / commands from bridge.js
    * ------------------------------------------------------------------ */
 
-  function setForced(value, wrote) {
+  function setForced(value) {
     const next = normalize(value);
     const changed = next !== forced;
-    if (typeof wrote === 'boolean') wroteLS = wrote;
     forced = next;
     if (forced === AUTO) {
-      clearYouTubeOverride();
       lastApplied = null;
+      lastPersisted = null;
     } else if (changed) {
       missCount = 0;
       bind();
@@ -351,7 +335,7 @@
 
     switch (data.cmd) {
       case 'set':
-        setForced(data.quality, data.wrote);
+        setForced(data.quality);
         break;
       case 'status':
         post({ fyr: NS, evt: 'status', status: collect() });

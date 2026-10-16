@@ -9,15 +9,18 @@
  *   ...-chromium-<version>.zip         plain zip (for --load-extension)
  *   ...-chromium-<id>-<version>.crx    signed CRX3
  *
- * The Chromium signing key lives in tools/crx-key.pem and is generated on
- * first run. Keep it: the extension id is derived from it, so reusing it keeps
- * the id stable across rebuilds.
+ * The Chromium signing key never lives in the repository. It is read from
+ * $FYR_CRX_KEY, or generated on first run at
+ *   <OS config dir>/force-youtube-resolution/crx-key.pem
+ * (e.g. %APPDATA%\force-youtube-resolution on Windows). Keep it: the extension
+ * id is derived from it, so reusing it keeps the id stable across rebuilds.
  */
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 
 const { createZip } = require('./zip.cjs');
@@ -25,10 +28,25 @@ const { packCrx3, generateKeyPair, verifyCrx3 } = require('./crx.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
-const KEY_FILE = path.join(__dirname, 'crx-key.pem');
-const PUB_FILE = path.join(__dirname, 'crx-key.pub.der');
-
 const NAME = 'force-youtube-resolution';
+
+/**
+ * Where the signing key lives. Never inside the repository: anyone holding it
+ * can publish updates under this extension's id. Override with FYR_CRX_KEY.
+ */
+function keyPaths() {
+  const fromEnv = process.env.FYR_CRX_KEY;
+  const keyFile = fromEnv
+    ? path.resolve(fromEnv)
+    : path.join(
+        process.platform === 'win32'
+          ? process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+          : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+        NAME,
+        'crx-key.pem'
+      );
+  return { keyFile, pubFile: keyFile.replace(/\.pem$/i, '') + '.pub.der' };
+}
 
 /** Collect a build folder into deterministic, manifest-first entries. */
 function collect(dir) {
@@ -61,16 +79,37 @@ function readVersion(dir) {
   return JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
 }
 
+/** Move a pre-existing key out of the tree so existing installs keep their id. */
+function migrateLegacyKey(keyFile) {
+  const legacy = path.join(__dirname, 'crx-key.pem');
+  const legacyPub = path.join(__dirname, 'crx-key.pub.der');
+  if (fs.existsSync(keyFile) || !fs.existsSync(legacy)) return false;
+  fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+  // copy + unlink rather than rename: the config dir may be on another volume.
+  fs.copyFileSync(legacy, keyFile);
+  try {
+    fs.chmodSync(keyFile, 0o600);
+  } catch (_) {}
+  fs.unlinkSync(legacy);
+  try {
+    fs.rmSync(legacyPub, { force: true });
+  } catch (_) {}
+  return true;
+}
+
 function loadOrCreateKey() {
-  if (fs.existsSync(KEY_FILE)) {
-    const privateKeyPem = fs.readFileSync(KEY_FILE, 'utf8');
+  const { keyFile, pubFile } = keyPaths();
+  const migrated = migrateLegacyKey(keyFile);
+  if (fs.existsSync(keyFile)) {
+    const privateKeyPem = fs.readFileSync(keyFile, 'utf8');
     const publicKeyDer = crypto.createPublicKey(privateKeyPem).export({ type: 'spki', format: 'der' });
-    return { privateKeyPem, publicKeyDer, fresh: false };
+    return { privateKeyPem, publicKeyDer, fresh: false, migrated, keyFile };
   }
+  fs.mkdirSync(path.dirname(keyFile), { recursive: true });
   const { publicKey, privateKey } = generateKeyPair();
-  fs.writeFileSync(KEY_FILE, privateKey, { mode: 0o600 });
-  fs.writeFileSync(PUB_FILE, publicKey);
-  return { privateKeyPem: privateKey, publicKeyDer: publicKey, fresh: true };
+  fs.writeFileSync(keyFile, privateKey, { mode: 0o600 });
+  fs.writeFileSync(pubFile, publicKey);
+  return { privateKeyPem: privateKey, publicKeyDer: publicKey, fresh: true, migrated: false, keyFile };
 }
 
 function human(bytes) {
@@ -149,7 +188,12 @@ function main() {
   console.log(`\nzip   ${crEntries.length} files  ${human(zip.length)}  ${path.basename(zipPath)}`);
 
   const key = loadOrCreateKey();
-  if (key.fresh) console.log('\ngenerated a new signing key -> tools/crx-key.pem (keep it: the extension id derives from it)');
+  if (key.migrated) console.log(`\nmoved the signing key out of the repository -> ${key.keyFile}`);
+  if (key.fresh) {
+    console.log(`\ngenerated a new signing key -> ${key.keyFile}`);
+    console.log('      (keep it: the extension id derives from it, and it is never written into the repo)');
+  }
+  console.log(`\nkey   ${key.keyFile}${process.env.FYR_CRX_KEY ? '  (from FYR_CRX_KEY)' : ''}`);
 
   const { crx, id } = packCrx3(zip, key);
   const crxPath = path.join(DIST, `${NAME}-chromium-${id}-${crVersion}.crx`);

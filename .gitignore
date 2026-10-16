@@ -4,10 +4,17 @@
 /dist/
 /preview/
 
-# Private signing key for the .crx. NEVER commit this: anyone holding it can
-# publish updates under this extension's id.
+# Signing material. NEVER commit this: anyone holding the private key can
+# publish updates under this extension's id. tools/pack.js reads the key from
+# FYR_CRX_KEY or the OS config directory (e.g. %APPDATA%\force-youtube-resolution
+# on Windows), never from the repository tree.
 /tools/crx-key.pem
 /tools/crx-key.pub.der
+*.pem
+*.key
+*.der
+*.p12
+*.pfx
 
 # Scratch output from tools/unpack.cjs
 /unpacked/

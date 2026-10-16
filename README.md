@@ -98,8 +98,8 @@ So the extension is split in two:
 
 | File | World | Responsibility |
 |---|---|---|
-| `bridge.js` | isolated | reads/writes extension storage, relays the setting to the engine, relays status to the popup, and remembers across reloads whether the engine wrote YouTube's quality key |
-| `force.js` | **main** | finds the player, pins the resolution, updates `localStorage["yt-player-quality"]` |
+| `bridge.js` | isolated | owns extension storage and the durable side of YouTube's quality key, relays the setting to the engine, relays status to the popup, and removes the key again on `Auto` |
+| `force.js` | **main** | finds the player, pins the resolution, and mirrors the choice into `localStorage["yt-player-quality"]` |
 
 They talk over `window.postMessage`. Both browsers declare `force.js` with
 `"world": "MAIN"` (Chrome 111+, Firefox 128+), so **nothing is web-accessible and
@@ -122,9 +122,13 @@ What is closed off regardless:
 - **Your setting can't be forged in the UI.** The popup reads the forced
   resolution from extension storage, which the page cannot write. Player-sourced
   values (current quality, what was substituted) are shown as advisory only.
-- **Switching to `Auto` always cleans up**, including after a browser restart —
-  the bridge persists a "we wrote this" flag, so the extension removes exactly
-  the key it created and never deletes a quality preference YouTube set itself.
+- **Switching to `Auto` always cleans up**, including after a browser restart.
+  The isolated bridge records the exact value the engine wrote and removes the
+  entry only while it still holds that value — so the page world never deletes
+  the key, and a quality preference YouTube set itself is never touched.
+- **Only this extension can drive the bridge.** `runtime.onMessage` rejects any
+  sender whose id is not this extension's, so another installed extension cannot
+  change your setting.
 
 Once there, forcing a resolution is three calls:
 
@@ -172,7 +176,7 @@ Node 18+, no npm dependencies.
 
 ```bash
 node build.js               # -> Chromium/ and Firefox/
-node tools/test-content.cjs # 43 assertions across the engine and the bridge
+node tools/test-content.cjs # 69 assertions across the engine and the bridge
 node tools/pack.js          # -> dist/*.xpi, dist/*.crx, dist/*.zip
 ```
 
@@ -192,18 +196,21 @@ the resolution ladder in `force.js` and `popup.js` haven't drifted apart, that
 every locale defines the same keys, that every `__MSG_…__` / `data-i18n`
 reference resolves, that the manifests point at files that exist, that **neither
 browser makes `force.js` web-accessible**, that both run it in a MAIN world and
-not in every frame, and that no script-injection path has crept back into
-`bridge.js`.
+not in every frame, that no script-injection path has crept back into
+`bridge.js`, and that **no signing key has been committed into the tree**.
 
-`tools/pack.js` signs the `.crx` with an RSA-2048 key (`tools/crx-key.pem`,
-generated on first run) and verifies its own output before exiting. The CRX3
-layout was checked against ground truth: a real Chrome Web Store CRX3 verifies
-against the same payload construction.
+`tools/pack.js` signs the `.crx` with an RSA-2048 key and verifies its own
+output before exiting. The key never lives in the repository: it is read from
+`$FYR_CRX_KEY`, or generated on first run at
+`<OS config dir>/force-youtube-resolution/crx-key.pem` (e.g.
+`%APPDATA%\force-youtube-resolution` on Windows). The CRX3 layout was checked
+against ground truth: a real Chrome Web Store CRX3 verifies against the same
+payload construction.
 
 ## Tests
 
 `tools/test-content.cjs` runs the real `force.js` and `bridge.js` in `vm`
-sandboxes against a fake YouTube player — 56 assertions covering exact matches,
+sandboxes against a fake YouTube player — 69 assertions covering exact matches,
 every fallback direction, re-assertion after YouTube overrides, staying quiet
 when it hasn't, player events, message routing, and rejection of any value
 outside the ladder. Cases worth calling out:
@@ -212,8 +219,8 @@ outside the ladder. Cases worth calling out:
 - switching back to `Auto` clears the override **across a page reload**
 - a YouTube quality preference the extension never wrote is left alone
 - neither script leaves a page-visible string global
-- a forged `wrote` message can only trigger a harmless removal, never cause a
-  key to be left behind
+- a forged `wrote` message cannot make the bridge drop a key it did not write
+- a message from another extension is rejected outright
 
 `node tools/audit-probe.cjs` is the standalone end-to-end check for the reload
 case, and prints a one-line verdict either way.
