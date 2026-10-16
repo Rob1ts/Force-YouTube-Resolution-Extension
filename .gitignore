@@ -1,0 +1,21 @@
+# Build output — regenerate with `node build.js` and `node tools/pack.js`
+/Chromium/
+/Firefox/
+/dist/
+/preview/
+
+# Private signing key for the .crx. NEVER commit this: anyone holding it can
+# publish updates under this extension's id.
+/tools/crx-key.pem
+/tools/crx-key.pub.der
+
+# Scratch output from tools/unpack.cjs
+/unpacked/
+
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+
+# Reference archives used while developing — not part of this project
+/reference/
