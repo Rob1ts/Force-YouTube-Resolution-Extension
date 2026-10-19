@@ -52,10 +52,16 @@
   const HEIGHT_OF = {};
   for (const q of LADDER) HEIGHT_OF[q.id] = q.height;
 
+  // Every height the ladder knows. A decoded height outside this set is not a
+  // level we can reason about, so it is ignored.
+  const KNOWN_HEIGHTS = new Set(Object.values(HEIGHT_OF));
+
   const AUTO = 'auto';
   const LS_KEY = 'yt-player-quality';
   const LS_TTL = 31104000; // 8.6 h, mirrors YouTube's own preference window
   const POLL_MS = 1200;
+  // How often the engine re-announces itself until the bridge answers.
+  const READY_RETRY_MS = 1000;
   // Same-window messages only; pin the target origin instead of '*'. Falls back
   // to '*' only where the origin is opaque (never the case on YouTube).
   const ORIGIN =
@@ -72,6 +78,8 @@
   let lastPersisted = null;
   let applyTimer = null;
   let missCount = 0;
+  // Set once the bridge answers one of our announcements.
+  let bridgeSeen = false;
 
   /* ------------------------------------------------------------------ *
    * Helpers
@@ -169,6 +177,33 @@
   function currentOf(el) {
     const q = safe(() => el.getPlaybackQuality());
     return typeof q === 'string' ? q : '';
+  }
+
+  /** The <video> the player is decoding, or null if there is none. */
+  function videoOf(el) {
+    return (
+      safe(() => el.querySelector('video')) ||
+      safe(() => document.querySelector('#movie_player video')) ||
+      safe(() => document.querySelector('video.html5-main-video'))
+    );
+  }
+
+  /**
+   * True when the video is decoding a level we know, but not the one we
+   * forced. getPlaybackQuality() reports the *selected* level, which can be
+   * the one we asked for even while the video actually plays a lower
+   * rendition — the decoded height of the <video> element is the honest
+   * signal, and it is the one the viewer sees.
+   */
+  function heightDrift(el, target) {
+    const want = HEIGHT_OF[target] || 0;
+    if (!want) return false;
+    const video = videoOf(el);
+    if (!video) return false;
+    const h = safe(() => video.videoHeight);
+    if (typeof h !== 'number' || h <= 0) return false; // nothing decoded yet
+    if (!KNOWN_HEIGHTS.has(h)) return false; // not a level on the ladder
+    return h !== want;
   }
 
   /**
@@ -269,9 +304,13 @@
     if (!target) return;
 
     const current = currentOf(el);
-    if (current) {
-      if (current !== target) pushQuality(el, target);
-    } else {
+    if (current && current !== target) {
+      pushQuality(el, target);
+    } else if (heightDrift(el, target)) {
+      // The player reports the level we asked for, but the video is decoding
+      // another one — push it again.
+      pushQuality(el, target);
+    } else if (!current) {
       // Cannot read the current quality — re-assert periodically instead.
       if (++missCount >= 3) {
         missCount = 0;
@@ -333,6 +372,12 @@
     const data = event.data;
     if (!data || typeof data !== 'object' || data.fyr !== NS) return;
 
+    // The bridge answers our announcements with commands, so seeing one means
+    // the handshake went through and we can stop announcing every second.
+    if (data.cmd === 'set' || data.cmd === 'status' || data.cmd === 'rebind' || data.cmd === 'sync') {
+      bridgeSeen = true;
+    }
+
     switch (data.cmd) {
       case 'set':
         setForced(data.quality);
@@ -392,5 +437,20 @@
 
   setInterval(tick, POLL_MS);
 
+  /* The page world and the isolated world are injected independently, so the
+   * bridge's listener may not exist yet when this script announces itself.
+   * The first "ready" can then be dispatched into the void, and without a
+   * repeat the extension would stay silent for the rest of the page's life:
+   * the bridge would never learn the engine is there, and never push the
+   * stored setting to it. Keep announcing until the bridge answers, and keep
+   * a slow heartbeat afterwards so nothing can silence the engine for good. */
+  let readyTicks = 0;
   post({ fyr: NS, evt: 'ready' });
+  setInterval(() => {
+    if (!bridgeSeen) {
+      post({ fyr: NS, evt: 'ready' });
+      return;
+    }
+    if (++readyTicks % 10 === 0) post({ fyr: NS, evt: 'ready' });
+  }, READY_RETRY_MS);
 })();

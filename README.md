@@ -41,7 +41,10 @@ Picks one resolution and holds it there.
   4320p is meaningless for a 480p upload.
 - **Keeps re-applying.** Re-asserted on playback, buffering, video changes,
   SPA navigation and a 1.2 s self-healing poll — and only when YouTube has
-  actually drifted off the target.
+  actually drifted off the target. The poll watches the height the video is
+  actually decoding, not just what the player reports, so a stream that
+  quietly drops to 720p while the player still claims 1080p is caught and
+  pushed back up.
 - **Never silently overrides you.** Ask for 4320p on a 1080p video and it uses
   1080p and says so: *"4320p is not offered here · using 1080p"*. It never
   climbs above your request and never drops back to YouTube's default.
@@ -176,7 +179,7 @@ Node 18+, no npm dependencies.
 
 ```bash
 node build.js               # -> Chromium/ and Firefox/
-node tools/test-content.cjs # 69 assertions across the engine and the bridge
+node tools/test-content.cjs # 77 assertions across the engine and the bridge
 node tools/pack.js          # -> dist/*.xpi, dist/*.crx, dist/*.zip
 ```
 
@@ -210,7 +213,7 @@ payload construction.
 ## Tests
 
 `tools/test-content.cjs` runs the real `force.js` and `bridge.js` in `vm`
-sandboxes against a fake YouTube player — 69 assertions covering exact matches,
+sandboxes against a fake YouTube player — 77 assertions covering exact matches,
 every fallback direction, re-assertion after YouTube overrides, staying quiet
 when it hasn't, player events, message routing, and rejection of any value
 outside the ladder. Cases worth calling out:
@@ -221,6 +224,9 @@ outside the ladder. Cases worth calling out:
 - neither script leaves a page-visible string global
 - a forged `wrote` message cannot make the bridge drop a key it did not write
 - a message from another extension is rejected outright
+- a lost handshake cannot silence the extension: the engine keeps announcing
+  itself until the bridge answers, and the bridge probes for the engine
+- a stream decoding a lower level than the player reports is pushed back up
 
 `node tools/audit-probe.cjs` is the standalone end-to-end check for the reload
 case, and prints a one-line verdict either way.

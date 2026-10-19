@@ -15,7 +15,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const REPO = process.argv[2] || 'Rob1ts/Force-YouTube-Resolution-Extension';
-const TAG = process.argv[3] || 'v1.1.1';
+const TAG = process.argv[3] || 'v1.1.2';
 const DIST = path.join(__dirname, '..', 'dist');
 const API = 'https://api.github.com';
 
@@ -57,20 +57,31 @@ async function api(token, method, url, body, headers = {}) {
   return { status: res.status, json, text };
 }
 
-function releaseBody(version, crxName) {
-  return `Pick one resolution and hold it there.
+/**
+ * Release notes per version. The entry is picked by the tag, so the notes can
+ * never drift away from the release they describe.
+ */
+const CHANGES = {
+  '1.1.2': `Two fixes for "it sometimes doesn't force the resolution".
 
-YouTube's adaptive bitrate decides the resolution on its own, and the same video
-can play at 720p one time and 2160p the next. Setting it from the gear menu
-doesn't stick either — YouTube re-applies its own saved value on every video
-load, every buffer underrun, and every time the ABR decides to step up.
+- **A lost handshake can no longer silence the extension.** The page world and
+  the isolated world are injected independently, so the engine's first
+  announcement could be dispatched before the bridge was listening. The stored
+  setting was then never handed over and the extension did nothing on that
+  tab — and the popup could not recover it either. The engine now keeps
+  announcing itself until the bridge answers, the bridge treats a status reply
+  as proof that the engine is alive, and it probes for the engine until it has
+  seen it. Either injection order works now.
+- **The forced level is pushed again when the video drifts.** The poll used to
+  trust the player's own report of the current quality, which can name the
+  level you asked for while the video is actually decoding a lower one. The
+  engine now also watches the height the video is really decoding, and
+  re-asserts the forced level when the two disagree.
 
-This extension sets the level once and keeps re-asserting it.
+No change to the UI, to the ladder, or to anything the extension stores.`,
 
-## What changed in ${version}
-
-Security hardening. No new features, and no change to how the extension behaves in
-normal use.
+  '1.1.1': `Security hardening. No new features, and no change to how the
+extension behaves in normal use.
 
 - **Sender validation.** \`bridge.js\` ignores \`runtime.onMessage\` from anything
   whose sender id is not this extension's own.
@@ -82,8 +93,21 @@ normal use.
 - **The Chromium signing key no longer lives in the repository**, and the build
   refuses to run when key material is found in the tree.
 - **Archive extraction is confined to the destination** (Zip-Slip), and the
-  release helper only uploads this project's own assets.
+  release helper only uploads this project's own assets.`,
+};
 
+function releaseBody(version, crxName) {
+  const changes = CHANGES[version];
+  const changesSection = changes ? `\n## What changed in ${version}\n\n${changes}\n` : '';
+  return `Pick one resolution and hold it there.
+
+YouTube's adaptive bitrate decides the resolution on its own, and the same video
+can play at 720p one time and 2160p the next. Setting it from the gear menu
+doesn't stick either — YouTube re-applies its own saved value on every video
+load, every buffer underrun, and every time the ABR decides to step up.
+
+This extension sets the level once and keeps re-asserting it.
+${changesSection}
 ## Downloads
 
 | File | Browser |
@@ -166,7 +190,7 @@ Node 18+, no npm dependencies.
 
 \`\`\`bash
 node build.js               # -> Chromium/ and Firefox/
-node tools/test-content.cjs # 69 assertions
+node tools/test-content.cjs # 77 assertions
 node tools/audit-probe.cjs  # end-to-end reload check
 node tools/pack.js          # -> dist/
 \`\`\`

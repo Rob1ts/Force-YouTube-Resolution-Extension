@@ -45,6 +45,7 @@ function bootEngine({
   apiReady = true,
   onVideoPage = true,
   storage: sharedStorage = {},
+  videoHeight = 0,
 }) {
   const playerListeners = new Map();
   const docListeners = new Map();
@@ -58,6 +59,12 @@ function bootEngine({
     dataset: {},
     _available: available,
     _current: current,
+    // The player element holds the <video>; videoHeight is the level the
+    // browser is actually decoding, which is not always the one the player
+    // reports through getPlaybackQuality().
+    querySelector(sel) {
+      return sel === 'video' && videoHeight ? { videoHeight } : null;
+    },
     getAvailableQualityLevels() {
       return this._available.slice();
     },
@@ -414,6 +421,33 @@ async function main() {
     ok('re-pushes after an override', h.player.calls.some((c) => c[1] === 'hd720'));
   }
 
+  console.log('\n [6b] re-asserts when the player reports our level but the video plays another');
+  {
+    // getPlaybackQuality() can report the level we asked for while the video
+    // is actually decoding a different one. The decoded height is the honest
+    // signal, and it is the one the user sees.
+    const h = bootEngine({ available: ['hd1080', 'hd720'], current: 'hd1080', videoHeight: 720 });
+    h.fromBridge('set', 'hd1080');
+    await flush();
+    h.player.calls.length = 0;
+    h.tick();
+    ok('re-pushes when the decoded height is a different known level', h.player.calls.some((c) => c[1] === 'hd1080'), JSON.stringify(h.player.calls));
+
+    const agree = bootEngine({ available: ['hd1080', 'hd720'], current: 'hd1080', videoHeight: 1080 });
+    agree.fromBridge('set', 'hd1080');
+    await flush();
+    agree.player.calls.length = 0;
+    agree.tick();
+    eq('quiet when the decoded height agrees', agree.player.calls, []);
+
+    const unknown = bootEngine({ available: ['hd1080', 'hd720'], current: 'hd1080', videoHeight: 1081 });
+    unknown.fromBridge('set', 'hd1080');
+    await flush();
+    unknown.player.calls.length = 0;
+    unknown.tick();
+    eq('quiet when the decoded height is not a level we know', unknown.player.calls, []);
+  }
+
   console.log('\n [7] player events');
   {
     const h = bootEngine({ available: ['hd1080', 'hd720', 'large'] });
@@ -446,6 +480,26 @@ async function main() {
     ok('posted a ready handshake on load', h.posted.some((m) => m.evt === 'ready'));
   }
 
+  console.log('\n [8b] keeps announcing itself until the bridge answers');
+  {
+    const h = bootEngine({ available: ['hd1080', 'hd720'] });
+    const announced = () => h.posted.filter((m) => m.evt === 'ready').length;
+    eq('announces once on load', announced(), 1);
+
+    // The isolated world is injected independently of the page world, so the
+    // first announcement can be dispatched before the bridge's listener
+    // exists. Without a repeat the extension stays silent for the rest of
+    // the page's life.
+    h.tick();
+    ok('announces again while the bridge stays silent', announced() > 1, String(announced()));
+
+    // Once the bridge answers, the engine must stop shouting every second.
+    h.fromBridge('status');
+    const after = announced();
+    h.tick(); h.tick(); h.tick();
+    eq('quiet once the bridge answered', announced(), after);
+  }
+
   console.log('\n [9] rejects values outside the ladder');
   {
     const h = bootEngine({ available: ['hd1080', 'hd720'] });
@@ -469,6 +523,24 @@ async function main() {
     await flush(50);
     const set = b.toEngine.find((m) => m.cmd === 'set');
     ok('sends the stored setting on ready', set && set.quality === 'hd720', JSON.stringify(b.toEngine));
+  }
+
+  console.log('\n [10b] recovers when the engine\'s first announcement was missed');
+  {
+    const b = bootBridge({ forced: 'hd720' });
+    await flush(50);
+    // The engine's "ready" was dispatched before this listener existed, so the
+    // bridge never learned that the engine is there.
+    b.fromEngine({ fyr: NS, evt: 'status', status: { hasPlayer: true, available: ['hd720'], current: 'hd720', forced: 'hd720', applied: 'hd720', title: '', onVideoPage: true } });
+    await flush(50);
+    ok('a status reply counts as proof that the engine is alive', b.toEngine.some((m) => m.cmd === 'set' && m.quality === 'hd720'), JSON.stringify(b.toEngine));
+  }
+
+  console.log('\n [10c] probes the engine on its own');
+  {
+    const b = bootBridge({ forced: 'hd1080' });
+    await flush(1200);
+    ok('asks for a status while it has not seen the engine', b.toEngine.some((m) => m.cmd === 'status'), JSON.stringify(b.toEngine));
   }
 
   console.log('\n [11] relays storage changes to the engine');

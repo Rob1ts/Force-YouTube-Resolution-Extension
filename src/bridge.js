@@ -121,6 +121,23 @@
     toEngine({ cmd: 'set', quality: forced });
   }
 
+  /* The engine announces itself when it loads, but that announcement can be
+   * lost: the page world and the isolated world are injected independently, so
+   * the first "ready" may be dispatched before this listener exists. Until the
+   * bridge has seen the engine, ask it for a status — the reply is proof of
+   * life, and the stored setting can be pushed. */
+  const PROBE_MS = 1000;
+  let probeTimer = null;
+  function probeUntilReady() {
+    if (engineReady || probeTimer) return;
+    probeTimer = setTimeout(() => {
+      probeTimer = null;
+      if (engineReady) return;
+      toEngine({ cmd: 'status' });
+      probeUntilReady();
+    }, PROBE_MS);
+  }
+
   /* ------------------------------------------------------------------ *
    * YouTube's quality key — owned by the isolated world
    * ------------------------------------------------------------------ */
@@ -187,6 +204,12 @@
       return;
     }
     if (data.evt === 'status') {
+      // A status reply proves the engine is alive, even if its first "ready"
+      // announcement never arrived.
+      if (!engineReady) {
+        engineReady = true;
+        pushSetting();
+      }
       lastStatus = data.status || null;
       lastStatusAt = Date.now();
       flushPendingStatus();
@@ -264,4 +287,6 @@
     // left behind — but only while it is still the value the engine wrote.
     if (forced === AUTO) clearStaleOverride();
   });
+
+  probeUntilReady();
 })();
