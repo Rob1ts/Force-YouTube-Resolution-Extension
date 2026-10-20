@@ -222,8 +222,9 @@ YouTube.
 
 - **Chrome says the CRX is not from the Web Store.** Use the unpacked ZIP or
   publish through the Chrome Web Store.
-- **Firefox refuses the XPI permanently.** Use temporary installation through
-  `about:debugging`, or sign the XPI on addons.mozilla.org.
+- **Firefox refuses the GitHub XPI permanently.** That build is unsigned. Install
+  the signed version from the
+  [AMO listing](https://addons.mozilla.org/en-US/firefox/addon/force-youtube-resolution/).
 - **AMO reports an add-on ID mismatch.** Check that you uploaded the XPI from
   this project, not a build of another extension. The Force YouTube Resolution
   ID is `force-youtube-resolution@local` and must match the AMO listing being
