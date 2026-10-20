@@ -1,28 +1,15 @@
-# Build output — regenerate with `node build.js` and `node tools/pack.js`
-/Chromium/
-/Firefox/
-/dist/
-/preview/
+node_modules/
+.keys/
+dist/
+test-results/
+.venv/
+__pycache__/
+*.pyc
+*.log
 
-# Signing material. NEVER commit this: anyone holding the private key can
-# publish updates under this extension's id. tools/pack.js reads the key from
-# FYR_CRX_KEY or the OS config directory (e.g. %APPDATA%\force-youtube-resolution
-# on Windows), never from the repository tree.
-/tools/crx-key.pem
-/tools/crx-key.pub.der
+# Never commit signing material.
 *.pem
 *.key
 *.der
 *.p12
 *.pfx
-
-# Scratch output from tools/unpack.cjs
-/unpacked/
-
-node_modules/
-.DS_Store
-Thumbs.db
-*.log
-
-# Reference archives used while developing — not part of this project
-/reference/

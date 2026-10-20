@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Test video - YouTube</title>
+    <script>
+        // Collect the status messages the extension broadcasts to the page.
+        window.__ytmqStatuses = [];
+        window.__ytmqCalls = [];
+        window.__ytmqErrors = [];
+
+        window.addEventListener('error', function (event) {
+            window.__ytmqErrors.push(String(event.message));
+        });
+        window.addEventListener('unhandledrejection', function (event) {
+            window.__ytmqErrors.push('rejection: ' + String(event.reason));
+        });
+        window.addEventListener('message', function (event) {
+            if (event.source !== window) return;
+            var data = event.data;
+            if (!data || data.channel !== 'youtube-max-quality' || data.type !== 'YTMQ_STATUS') return;
+            window.__ytmqStatuses.push(data.status);
+            if (window.__ytmqStatuses.length > 80) window.__ytmqStatuses.shift();
+        });
+
+        window.__ytmqLastStatus = function () {
+            return window.__ytmqStatuses.length
+                ? window.__ytmqStatuses[window.__ytmqStatuses.length - 1]
+                : null;
+        };
+    </script>
+</head>
+<body>
+    <h1>Mock YouTube player</h1>
+    <div id="movie_player" class="html5-video-player"></div>
+
+    <script>
+        window.__ytmqAvailable = [
+            'auto', 'highres', 'hd2160', 'hd1440', 'hd1080', 'hd720',
+            'large', 'medium', 'small', 'tiny'
+        ];
+        window.__ytmqQuality = 'hd720';
+
+        var player = document.getElementById('movie_player');
+
+        player.getAvailableQualityLevels = function () {
+            return window.__ytmqAvailable.slice();
+        };
+        player.getPlaybackQuality = function () {
+            return window.__ytmqQuality;
+        };
+        player.getPlayerState = function () {
+            return 1;
+        };
+        player.setPlaybackQualityRange = function (minimum, maximum) {
+            window.__ytmqCalls.push({ type: 'range', min: minimum, max: maximum, at: Date.now() });
+        };
+        player.setPlaybackQuality = function (quality) {
+            window.__ytmqQuality = quality;
+            window.__ytmqCalls.push({ type: 'set', quality: quality, at: Date.now() });
+            document.dispatchEvent(new CustomEvent('yt-player-quality-changed', {
+                detail: { quality: quality }
+            }));
+        };
+
+        window.__ytmqSetQuality = function (quality, notify) {
+            window.__ytmqQuality = quality;
+            window.__ytmqCalls.push({ type: 'manual', quality: quality, at: Date.now() });
+            if (notify !== false) {
+                document.dispatchEvent(new CustomEvent('yt-player-quality-changed', {
+                    detail: { quality: quality }
+                }));
+            }
+        };
+
+        window.__ytmqSetAvailable = function (levels) {
+            window.__ytmqAvailable = levels.slice();
+            document.dispatchEvent(new Event('yt-player-attached'));
+        };
+
+        window.__ytmqSetAd = function (showing) {
+            player.classList.toggle('ad-showing', Boolean(showing));
+        };
+
+        window.__ytmqNavigate = function (url) {
+            history.pushState({}, '', url);
+            document.dispatchEvent(new Event('yt-navigate-finish'));
+        };
+
+        window.__ytmqRangeCalls = function (quality) {
+            return window.__ytmqCalls.filter(function (call) {
+                return call.type === 'range' && call.min === quality && call.max === quality;
+            });
+        };
+    </script>
+</body>
+</html>

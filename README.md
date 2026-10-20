@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="docs/icon.png" width="96" height="96" alt="Force YouTube Resolution logo">
+  <img src="docs/logo.png" width="104" height="104" alt="Force YouTube Resolution logo">
   <h1>Force YouTube Resolution</h1>
-  <p>Lock YouTube playback to one fixed resolution. Click the toolbar icon, pick a level, done.</p>
+  <p>Keep YouTube at the resolution you choose — even when YouTube changes it.</p>
 </div>
 
 <div align="center">
@@ -9,245 +9,232 @@
 [![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest%20V3-EA4335?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![Firefox MV3](https://img.shields.io/badge/Firefox-Manifest%20V3-FF7139?logo=firefox-browser&logoColor=white)](https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/manifest_version)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
-[![No dependencies](https://img.shields.io/badge/dependencies-none-success)](https://nodejs.org)
+[![No dependencies](https://img.shields.io/badge/runtime%20dependencies-none-success)](https://github.com/Rob1ts/Force-YouTube-Resolution-Extension)
 
 </div>
 
 ---
 
-![The extension popup, with 1080p forced on a 4K test video](docs/screenshot-popup.png)
+<div align="center">
+  <img src="docs/screenshot-popup.png" width="380" alt="The Force YouTube Resolution popup showing an active 1080p cap">
+</div>
 
-## The problem
+## Why this exists
 
-YouTube's adaptive bitrate picks a resolution based on your connection, your
-screen, and the codec it feels like serving today. Open the same video twice and
-you can get 720p one time and 2160p the next.
+YouTube's adaptive bitrate chooses a resolution from your connection, screen,
+codec support and current network conditions. The same video can start at 720p
+one time and 2160p the next. Choosing a quality from YouTube's gear menu is not
+reliable either: a new video, a buffer underrun, an ad or the adaptive bitrate
+itself can change it back.
 
-Worse, setting the quality from the gear menu **doesn't stick**. YouTube
-re-applies its own saved value whenever a video loads, on every buffer
-underrun, and whenever the adaptive bitrate decides to step up. A setting you
-made ten seconds ago is gone.
+**Force YouTube Resolution keeps re-applying your chosen maximum resolution.**
 
-## What this does
+## What it does
 
-Picks one resolution and holds it there.
+- **Sets a maximum, not a random target.** Choose *Highest available*, or cap
+  playback at 144p, 240p, 360p, 480p, 720p, 1080p, 1440p, 2160p, 2880p or
+  4320p.
+- **Never exceeds your cap.** Ask for 1080p and YouTube will use 1080p when it
+  is offered. If it is not, the extension picks the best lower quality instead
+  of silently going higher.
+- **Re-applies the target when it drifts.** The extension watches the player and
+  restores the selected quality after manual changes, source changes, SPA
+  navigation and YouTube's own adaptive switches.
+- **Does not fight ads.** Enforcement pauses while an ad is playing and resumes
+  with your chosen quality when the video returns.
+- **Shows what is actually happening.** The popup reports the active resolution,
+  available qualities, fallback decisions and whether the player is ready.
+- **Works across YouTube.** Watch pages, Shorts, live streams and
+  `youtube.com/embed` pages are supported without a page reload.
 
-- **Fixed ladder, no custom values.** 144p, 240p, 360p, 480p, 720p, 1080p,
-  1440p, 2160p, 2880p, 4320p — plus `Auto` to hand control back. There is no
-  way to type your own number, because a resolution outside YouTube's ladder is
-  not something the player can serve.
-- **Shows what the video actually offers.** The popup asks the running player
-  which levels it has and marks the rest, so you can see at a glance that
-  4320p is meaningless for a 480p upload.
-- **Keeps re-applying.** Re-asserted on playback, buffering, video changes,
-  SPA navigation and a 1.2 s self-healing poll — and only when YouTube has
-  actually drifted off the target. The poll watches the height the video is
-  actually decoding, not just what the player reports, so a stream that
-  quietly drops to 720p while the player still claims 1080p is caught and
-  pushed back up.
-- **Never silently overrides you.** Ask for 4320p on a 1080p video and it uses
-  1080p and says so: *"4320p is not offered here · using 1080p"*. It never
-  climbs above your request and never drops back to YouTube's default.
-- **The gear menu agrees with it.** The forced value is mirrored into YouTube's
-  own quality menu, so the UI doesn't contradict what's on screen.
+The popup has a single on/off switch and one resolution selector. Settings are
+saved automatically.
+
+### Status meanings
+
+| Status | Meaning |
+| --- | --- |
+| **Active** | Your target quality is playing. |
+| **Active — fallback** | Your exact cap is unavailable; the best lower quality is playing. |
+| **Waiting for player** | The YouTube player is still loading or the video has not started. |
+| **Ad playing** | Enforcement is paused until the ad finishes. |
+| **No video detected** | The current tab is not a supported YouTube video page. |
+| **Extension paused** | The toggle is off and YouTube controls quality normally. |
+| **Reload this page** | The extension was installed or updated after this tab loaded. |
 
 ## Install
 
-Download the packaged `.xpi` / `.crx` from this repository's
-**Releases** page, or build it yourself from source (below).
+Download the latest packages from the
+[**Releases page**](https://github.com/Rob1ts/Force-YouTube-Resolution-Extension/releases/latest).
 
-### Chromium — Chrome, Edge, Brave, Opera, Vivaldi, Arc
+| Download | Use |
+| --- | --- |
+| `force-youtube-resolution-firefox-2.0.0.xpi` | Firefox 128+ (unsigned) |
+| `force-youtube-resolution-chromium-2.0.0.crx` | Chromium 111+ |
+| `force-youtube-resolution-chromium-2.0.0.zip` | Chromium unpacked build |
+| `force-youtube-resolution-2.0.0-source.zip` | Complete corresponding source |
 
-| Method | Steps |
-|---|---|
-| **Unpacked** (easiest) | `chrome://extensions` → enable **Developer mode** → **Load unpacked** → pick `Chromium/` |
-| **The `.crx`** | enable **Developer mode**, then drag `dist/*-chromium-*.crx` onto the extensions page |
-| **The `.zip`** | unzip it anywhere, then **Load unpacked** on the result |
+### Chromium / Chrome / Edge / Brave / Opera / Vivaldi
+
+The unpacked ZIP is the most reliable installation method:
+
+1. Download and unzip `force-youtube-resolution-chromium-2.0.0.zip`.
+2. Open `chrome://extensions` (or `edge://extensions`).
+3. Enable **Developer mode**.
+4. Choose **Load unpacked** and select the unzipped folder.
+5. Open a YouTube video and use the toolbar popup.
+
+You can also drag the `.crx` onto the extensions page. Branded Chrome may reject
+CRX files distributed outside the Chrome Web Store with
+`CRX_REQUIRED_PROOF_MISSING`; that is a browser policy, not a package error. Use
+the unpacked ZIP or publish the extension through the Chrome Web Store for a
+store installation.
+
+Requires Chromium **111 or newer** because the player bridge uses
+`world: "MAIN"` content scripts.
 
 ### Firefox
 
-| Method | Steps |
-|---|---|
-| **Temporary** | `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → pick `Firefox/manifest.json` or the `.xpi` |
-| **Permanent (unsigned)** | Nightly / Developer Edition / ESR only: set `xpinstall.signatures.required = false` in `about:config`, then drag the `.xpi` onto the add-ons page |
-| **Permanent (signed)** | upload the `.xpi` to [addons.mozilla.org](https://addons.mozilla.org/developers/) and publish — Mozilla signs it, no key needed, and this is the only route that works on release Firefox |
+The XPI is **unsigned**.
+
+**Temporary installation (works in every Firefox):**
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Choose **Load Temporary Add-on**.
+3. Select `force-youtube-resolution-firefox-2.0.0.xpi`.
+4. Open a YouTube video. Firefox removes temporary add-ons when it restarts.
+
+**Permanent installation:** release Firefox only installs Mozilla-signed
+add-ons. Upload the XPI to [addons.mozilla.org](https://addons.mozilla.org/developers/)
+as an unlisted add-on, then install the signed copy returned by AMO. Keep the
+add-on ID `force-youtube-resolution@local` so future updates
+and settings remain associated.
+
+Requires Firefox **128 or newer**.
+
+### Upgrading from v1.x
+
+Version 2 keeps the Firefox add-on ID (`force-youtube-resolution@local`), so a
+signed v2 XPI updates the existing Firefox add-on in place and preserves its
+settings.
+
+The Chromium extension ID has changed from
+`imgigdnmkglkofpdomceeenaalemkjdk` to
+`donpidbdhgonhfbjfjpochojflkbjflf`. Remove the old Chromium extension before
+loading v2; Chromium settings start fresh because storage is scoped to the
+extension ID.
+
+## Use
+
+1. Open a YouTube watch, Shorts, live or embed page.
+2. Click the extension icon.
+3. Choose a maximum resolution. **Highest available** uses the best quality the
+   video offers.
+4. Switch **Force quality** off whenever you want YouTube to control playback
+   again.
+
+The setting applies as soon as the popup reports that the extension is active.
+Reload a YouTube tab after installing or updating the extension if it shows
+**Reload this page**.
+
+## Privacy and permissions
+
+- **`storage`** stores two local values: `enabled` and `maxQuality`.
+- **`*://*.youtube.com/*`** is the only host permission. The extension does
+  nothing on other sites.
+- No analytics, telemetry, tracking, accounts, network requests or remote code.
+- No `eval`, `new Function`, inline scripts, `innerHTML` or `document.write` in
+  runtime code.
+- Messages from the page are untrusted. Quality identifiers, video IDs, state
+  names and heights are validated against fixed allowlists, and the popup renders
+  values with `textContent`.
+- The Chromium signing key is not part of this repository. Only its public key is
+  embedded in the packaged manifest.
+
+The extension calls YouTube's player API directly. It does not bypass DRM,
+regional restrictions, ads, or the availability limits imposed by YouTube.
 
 ## How it works
 
-The interesting part is *where* the code runs, and getting this wrong is why most
-first attempts do nothing at all.
+YouTube attaches its player methods to the `#movie_player` element as own
+properties. Those properties exist only in the page's JavaScript world, so an
+ordinary isolated content script cannot see them. This extension therefore uses
+two layers:
 
-YouTube assigns its player API straight onto the element as **own properties**:
+- `src/page.js` runs in the **page world** with `world: "MAIN"` and talks to the
+  real player through `getAvailableQualityLevels`, `setPlaybackQualityRange` and
+  `setPlaybackQuality`.
+- `src/content.js` runs in the isolated extension world, owns
+  `browser.storage.local`, validates messages and bridges settings and status to
+  the page script.
 
-```js
-Object.getOwnPropertyNames(document.getElementById('movie_player'))
-// [..., setPlaybackQuality, setPlaybackQualityRange,
-//     getAvailableQualityLevels, getPlaybackQuality, ...]
-```
+A one-second watchdog checks the actual player quality and reasserts the target
+only when it differs. It skips ads, restores the target after ads, and reacts to
+player replacement and YouTube SPA navigation.
 
-Own properties created by page JavaScript live in the page's JavaScript heap. An
-extension content script normally runs in an **isolated world**, which shares the
-DOM but *not* that heap — so from an ordinary content script:
-
-```js
-typeof document.getElementById('movie_player').setPlaybackQuality
-// "undefined"
-```
-
-No exception, nothing in the console. The property simply isn't there. Any
-approach built on a plain content script will fail silently.
-
-So the extension is split in two:
-
-| File | World | Responsibility |
-|---|---|---|
-| `bridge.js` | isolated | owns extension storage and the durable side of YouTube's quality key, relays the setting to the engine, relays status to the popup, and removes the key again on `Auto` |
-| `force.js` | **main** | finds the player, pins the resolution, and mirrors the choice into `localStorage["yt-player-quality"]` |
-
-They talk over `window.postMessage`. Both browsers declare `force.js` with
-`"world": "MAIN"` (Chrome 111+, Firefox 128+), so **nothing is web-accessible and
-no site can load our code** — there is no injected `<script>` and no
-`web_accessible_resources` in either build.
-
-### What the page can and can't do
-
-Running in the main world means sharing a window with the page, so the honest
-position is that the page is inside the trust boundary: it can already call
-`player.setPlaybackQuality()` directly and already owns
-`localStorage["yt-player-quality"]`. Nothing this extension does grants it a
-capability it didn't already have.
-
-What is closed off regardless:
-
-- **No code of ours is reachable.** No WAR, no injected script, no global that
-  `Object.keys` or `getOwnPropertyNames` can see (the double-injection guards use
-  `Symbol` keys).
-- **Your setting can't be forged in the UI.** The popup reads the forced
-  resolution from extension storage, which the page cannot write. Player-sourced
-  values (current quality, what was substituted) are shown as advisory only.
-- **Switching to `Auto` always cleans up**, including after a browser restart.
-  The isolated bridge records the exact value the engine wrote and removes the
-  entry only while it still holds that value — so the page world never deletes
-  the key, and a quality preference YouTube set itself is never touched.
-- **Only this extension can drive the bridge.** `runtime.onMessage` rejects any
-  sender whose id is not this extension's, so another installed extension cannot
-  change your setting.
-
-Once there, forcing a resolution is three calls:
-
-```js
-const p = document.getElementById('movie_player');
-const wanted = 'hd1080';
-const levels = p.getAvailableQualityLevels();   // what this video really has
-
-p.setPlaybackQuality(wanted);                   // choose it
-p.setPlaybackQualityRange(wanted, wanted);      // pin it — this is the part that
-                                                // stops ABR upgrading later
-localStorage['yt-player-quality'] = /* … */;    // so the gear menu agrees
-```
-
-The **`setPlaybackQualityRange` call is the important one.** `setPlaybackQuality`
-alone only nudges the current playback; YouTube's adaptive bitrate is still free
-to step up a few seconds later. Pinning the range is what makes it stick.
-
-### When the video can't do what you asked
-
-YouTube only serves what an upload actually contains. The engine resolves the
-request against `getAvailableQualityLevels()`:
-
-- exact match → use it
-- otherwise → the best level **at or below** the request
-- if even the lowest offered level is above the request → the lowest offered
-
-It only ever requests a label the player actually reports, and it reports which
-one it used.
-
-## Privacy
-
-Deliberately minimal:
-
-- `storage` — remembers the one setting you chose
-- `*://*.youtube.com/*`, `*://*.youtube-nocookie.com/*` — read the player's quality list, apply the setting
-
-No network requests. No analytics. No telemetry. No remote code. No background
-service worker. No account, no sync — the setting lives in your browser's local
-storage and nowhere else.
+The selected resolution is always a ceiling. The fallback algorithm sorts the
+levels the video actually offers, chooses the highest level at or below the cap,
+and reports when the requested level was unavailable.
 
 ## Build from source
 
-Node 18+, no npm dependencies.
+Requirements:
+
+- Node.js 20 or newer
+- npm
+- Chromium/Chrome for the Playwright test
+- Python 3.10+ and Selenium for the optional Firefox test
 
 ```bash
-node build.js               # -> Chromium/ and Firefox/
-node tools/test-content.cjs # 77 assertions across the engine and the bridge
-node tools/pack.js          # -> dist/*.xpi, dist/*.crx, dist/*.zip
+npm install
+npm run build
+npm test
+npm run test:e2e
 ```
 
+`npm run build` creates unpacked builds in `dist/chromium` and `dist/firefox`,
+plus versioned XPI, ZIP, CRX and `SHA256SUMS.txt` files. `npm test` runs the unit,
+packaging, signature and security checks. `npm run test:e2e` runs the Chromium
+Playwright test against a mock YouTube player.
+
+The Firefox end-to-end test is a separate Selenium script:
+
+```bash
+pip install selenium
+python test/firefox-e2e.py
 ```
-Chromium/   built, load unpacked (MV3)
-Firefox/    built, load unpacked (MV3)
-dist/       packaged .xpi / .crx / .zip
-src/        the actual sources — bridge.js, force.js, popup.*, _locales/, manifests
-tools/      build, test and packaging helpers
-build.js    assembles both builds and validates them
-```
 
-`Chromium/`, `Firefox/` and `dist/` are generated. Edit `src/` and rebuild.
+It serves the mock player through `www.youtube.com` using Firefox's
+`network.dns.localDomains` preference, so the production manifest, host checks,
+content-script bridge and MAIN-world injection are exercised without contacting
+YouTube.
 
-`build.js` fails the build rather than shipping something broken. It checks that
-the resolution ladder in `force.js` and `popup.js` haven't drifted apart, that
-every locale defines the same keys, that every `__MSG_…__` / `data-i18n`
-reference resolves, that the manifests point at files that exist, that **neither
-browser makes `force.js` web-accessible**, that both run it in a MAIN world and
-not in every frame, that no script-injection path has crept back into
-`bridge.js`, and that **no signing key has been committed into the tree**.
+## Troubleshooting
 
-`tools/pack.js` signs the `.crx` with an RSA-2048 key and verifies its own
-output before exiting. The key never lives in the repository: it is read from
-`$FYR_CRX_KEY`, or generated on first run at
-`<OS config dir>/force-youtube-resolution/crx-key.pem` (e.g.
-`%APPDATA%\force-youtube-resolution` on Windows). The CRX3 layout was checked
-against ground truth: a real Chrome Web Store CRX3 verifies against the same
-payload construction.
-
-## Tests
-
-`tools/test-content.cjs` runs the real `force.js` and `bridge.js` in `vm`
-sandboxes against a fake YouTube player — 77 assertions covering exact matches,
-every fallback direction, re-assertion after YouTube overrides, staying quiet
-when it hasn't, player events, message routing, and rejection of any value
-outside the ladder. Cases worth calling out:
-
-- with the player API unreachable, nothing is attempted (the original bug)
-- switching back to `Auto` clears the override **across a page reload**
-- a YouTube quality preference the extension never wrote is left alone
-- neither script leaves a page-visible string global
-- a forged `wrote` message cannot make the bridge drop a key it did not write
-- a message from another extension is rejected outright
-- a lost handshake cannot silence the extension: the engine keeps announcing
-  itself until the bridge answers, and the bridge probes for the engine
-- a stream decoding a lower level than the player reports is pushed back up
-
-`node tools/audit-probe.cjs` is the standalone end-to-end check for the reload
-case, and prints a one-line verdict either way.
-
-## Notes
-
-- Works on the watch page, Shorts, embeds and `youtube-nocookie.com`.
-- The toolbar badge shows the forced level (`1080`), or nothing when set to Auto.
-- Setting `Auto` removes the `yt-player-quality` entry the extension wrote, so
-  YouTube behaves exactly as if the extension were not installed.
-- The extension can't give you a resolution the video doesn't have. It pins your
-  choice; it can't conjure formats that were never uploaded.
+- **Chrome says the CRX is not from the Web Store.** Use the unpacked ZIP or
+  publish through the Chrome Web Store.
+- **Firefox refuses the XPI permanently.** Use temporary installation through
+  `about:debugging`, or sign the XPI on addons.mozilla.org.
+- **AMO reports an add-on ID mismatch.** Check that you uploaded the XPI from
+  this project, not a build of another extension. The Force YouTube Resolution
+  ID is `force-youtube-resolution@local` and must match the AMO listing being
+  updated. A listing showing `resize-yt-to-window-size@local` belongs to a
+  different add-on.
+- **The requested resolution is not used.** The source may not offer it, or DRM,
+  device limits or the network may restrict it. The popup's **fallback** status
+  and **Available** row show what the player actually offers.
+- **The popup says Reload this page.** Reload the YouTube tab after installing
+  or updating the extension.
+- **The switch is off.** Turn on **Force quality** in the popup.
 
 ## License
 
-[GPL-3.0-only](LICENSE) — the full text is in `LICENSE`.
+Copyright (C) 2026 Rob1ts.
 
-Copyleft. If you redistribute this — modified or not — you must pass on the
-complete corresponding source under the same terms, and keep the license intact.
-Publishing a GitHub repo of the source satisfies this for anyone who installs the
-builds from it.
+This project is free software licensed under the
+[GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`). You may
+redistribute it and/or modify it under the terms of that license. There is no
+warranty, to the extent permitted by law.
 
-Not affiliated with, endorsed by, or connected to Google or YouTube.
-"YouTube" is a trademark of Google LLC.
+Not affiliated with, endorsed by, or connected to Google or YouTube. "YouTube"
+is a trademark of Google LLC.

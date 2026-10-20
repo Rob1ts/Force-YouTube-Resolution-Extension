@@ -1,9 +1,9 @@
-# Normalise line endings in the repository.
-# Keeps diffs stable across Windows, macOS and Linux checkouts.
+# Keep line endings stable across Windows, macOS and Linux checkouts.
 * text=auto eol=lf
 
-# Images are never text.
+# Images are binary.
 *.png binary
 
-# Generated / vendored content that should not be diffed.
-LICENSE text eol=lf
+# Generated release output is never committed.
+/dist/ export-ignore
+/test-results/ export-ignore

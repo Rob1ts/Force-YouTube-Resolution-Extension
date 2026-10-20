@@ -1,355 +1,433 @@
 /*
- * Force YouTube Resolution — popup
+ * Force YouTube Resolution - popup controller.
  *
- * Lists YouTube's fixed resolution ladder (no custom values possible) and
- * marks which levels the video in the active tab actually offers, read live
- * from the player's getAvailableQualityLevels().
+ * All user-visible text is written with textContent. Values coming from the
+ * content script are treated as untrusted and re-sanitized before display.
  */
+(function () {
+    'use strict';
 
-(() => {
-  'use strict';
+    const core = globalThis.YTMaxQualityCore;
+    const api = globalThis.browser && globalThis.browser.runtime
+        ? globalThis.browser
+        : globalThis.chrome;
 
-  const API = typeof browser !== 'undefined' && browser.runtime ? browser : chrome;
+    if (!core || !api) return;
 
-  const AUTO = 'auto';
+    const MESSAGE = core.MESSAGE;
+    const POLL_INTERVAL_MS = 1000;
+    const REQUEST_TIMEOUT_MS = 900;
+    const STATUS_CLASSES = ['is-active', 'is-fallback', 'is-waiting', 'is-paused', 'is-error'];
 
-  /* Same ladder as the content script. Kept in sync by build.js. */
-  const LADDER = [
-    { id: 'tiny', height: 144 },
-    { id: 'small', height: 240 },
-    { id: 'medium', height: 360 },
-    { id: 'large', height: 480 },
-    { id: 'hd720', height: 720 },
-    { id: 'hd1080', height: 1080, tag: 'HD' },
-    { id: 'hd1440', height: 1440, tag: 'HD' },
-    { id: 'hd2160', height: 2160, tag: '4K' },
-    { id: 'hd2880', height: 2880, tag: '4K' },
-    { id: 'highres', height: 4320, tag: '8K' },
-  ];
+    const elements = {
+        version: document.getElementById('version'),
+        toggle: document.getElementById('toggle'),
+        toggleLabel: document.getElementById('toggleLabel'),
+        quality: document.getElementById('quality'),
+        qualityHint: document.getElementById('qualityHint'),
+        statusCard: document.getElementById('statusCard'),
+        statusTitle: document.getElementById('statusTitle'),
+        statusDetail: document.getElementById('statusDetail'),
+        statusChip: document.getElementById('statusChip'),
+        statusMeta: document.getElementById('statusMeta'),
+        footer: document.querySelector('.footer'),
+        footerText: document.getElementById('footerText')
+    };
 
-  const HEIGHT_OF = {};
-  for (const q of LADDER) HEIGHT_OF[q.id] = q.height;
+    let settings = core.sanitizeSettings(core.DEFAULT_SETTINGS);
+    let refreshTimer = null;
+    let refreshInFlight = false;
+    let footerResetTimer = null;
 
-  const NS = 'fyr';
+    function setText(element, text) {
+        if (element) element.textContent = text;
+    }
 
-  /* ------------------------------------------------------------------ *
-   * API shims — work with promise-based and callback-based flavours
-   * ------------------------------------------------------------------ */
+    function setChip(text) {
+        setText(elements.statusChip, text || '');
+        elements.statusChip.hidden = !text;
+    }
 
-  function call(fn, ...args) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (v) => {
-        if (settled) return;
-        settled = true;
-        resolve(v);
-      };
-      try {
-        const maybe = fn(...args, done);
-        if (maybe && typeof maybe.then === 'function') {
-          maybe.then(done, () => done(undefined));
-        } else if (maybe !== undefined) {
-          done(maybe);
+    function setStatusClass(state) {
+        const classByState = {
+            active: 'is-active',
+            fallback: 'is-fallback',
+            waiting: 'is-waiting',
+            inactive: 'is-paused',
+            disabled: 'is-paused',
+            error: 'is-error'
+        };
+
+        elements.statusCard.classList.remove(...STATUS_CLASSES);
+        elements.statusCard.classList.add(classByState[state] || 'is-waiting');
+        elements.statusCard.dataset.state = state;
+    }
+
+    function setFooter(text, isError) {
+        setText(elements.footerText, text);
+        elements.footer.classList.toggle('is-error', Boolean(isError));
+
+        if (footerResetTimer !== null) {
+            clearTimeout(footerResetTimer);
+            footerResetTimer = null;
         }
-      } catch (_) {
-        done(undefined);
-      }
-    });
-  }
 
-  const storageGet = (defaults) => call(API.storage.local.get.bind(API.storage.local), defaults);
-  const storageSet = (obj) => call(API.storage.local.set.bind(API.storage.local), obj);
-  const tabsQuery = (q) => call(API.tabs.query.bind(API.tabs), q);
+        if (isError) {
+            footerResetTimer = setTimeout(function () {
+                setFooter('Settings are saved automatically', false);
+            }, 4000);
+        }
+    }
 
-  function sendToTab(tabId, msg) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (v) => {
-        if (settled) return;
-        settled = true;
-        resolve(v);
-      };
-      try {
-        const maybe = API.tabs.sendMessage(tabId, msg, (res) => {
-          void API.runtime.lastError;
-          done(res);
+    function setMeta(lines) {
+        elements.statusMeta.replaceChildren();
+        elements.statusMeta.hidden = lines.length === 0;
+
+        lines.forEach(function (line) {
+            const row = document.createElement('div');
+            const label = document.createElement('span');
+            label.textContent = line.label + ' ';
+            row.appendChild(label);
+
+            if (line.values) {
+                line.values.forEach(function (value, index) {
+                    if (index > 0) {
+                        const separator = document.createElement('span');
+                        separator.textContent = ' · ';
+                        row.appendChild(separator);
+                    }
+                    const item = document.createElement('strong');
+                    item.textContent = value;
+                    row.appendChild(item);
+                });
+            } else {
+                const value = document.createElement('strong');
+                value.textContent = line.value;
+                row.appendChild(value);
+            }
+
+            elements.statusMeta.appendChild(row);
         });
-        if (maybe && typeof maybe.then === 'function') {
-          maybe.then(done, () => done(undefined));
+    }
+
+    function populateQualityOptions() {
+        core.PREFERENCES.forEach(function (preference) {
+            const option = document.createElement('option');
+            option.value = preference.value;
+            option.textContent = preference.label;
+            elements.quality.appendChild(option);
+        });
+    }
+
+    function renderSettings() {
+        elements.toggle.setAttribute('aria-checked', settings.enabled ? 'true' : 'false');
+        elements.quality.disabled = !settings.enabled;
+        elements.quality.value = settings.maxQuality;
+        elements.toggleLabel.textContent = settings.enabled ? 'Force quality' : 'Force quality (off)';
+
+        if (!settings.enabled) {
+            elements.qualityHint.textContent = 'Turn on Force quality to apply a resolution cap.';
+            return;
         }
-      } catch (_) {
-        done(undefined);
-      }
-    });
-  }
 
-  const t = (key, fallback, substitutions) => {
-    try {
-      const msg = API.i18n.getMessage(key, substitutions);
-      return msg || fallback;
-    } catch (_) {
-      return fallback;
-    }
-  };
-
-  const label = (qualityId) => {
-    const h = HEIGHT_OF[qualityId];
-    return h ? h + 'p' : qualityId;
-  };
-
-  /* ------------------------------------------------------------------ *
-   * State
-   * ------------------------------------------------------------------ */
-
-  let selected = AUTO;
-  let lastStatus = null;
-
-  const $ = (id) => document.getElementById(id);
-
-  /* ------------------------------------------------------------------ *
-   * i18n
-   * ------------------------------------------------------------------ */
-
-  function localize() {
-    for (const el of document.querySelectorAll('[data-i18n]')) {
-      el.textContent = t(el.dataset.i18n, el.textContent);
-    }
-    for (const el of document.querySelectorAll('[data-i18n-title]')) {
-      el.title = t(el.dataset.i18nTitle, el.title);
-    }
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Rendering
-   * ------------------------------------------------------------------ */
-
-  function renderOptions() {
-    const wrap = $('options');
-    wrap.textContent = '';
-
-    const items = [{ id: AUTO, label: t('optAuto', 'Auto'), desc: t('optAutoDesc', 'YouTube decides') }].concat(
-      LADDER.map((q) => ({
-        id: q.id,
-        label: q.height + 'p',
-        tag: q.tag || '',
-      }))
-    );
-
-    for (const item of items) {
-      const row = document.createElement('label');
-      row.className = 'opt' + (item.id === AUTO ? ' is-auto' : '');
-      row.dataset.quality = item.id;
-
-      const input = document.createElement('input');
-      input.type = 'radio';
-      input.name = 'quality';
-      input.value = item.id;
-      input.checked = item.id === selected;
-
-      const name = document.createElement('span');
-      name.className = 'opt-name';
-      name.textContent = item.label;
-      if (item.desc) {
-        const desc = document.createElement('span');
-        desc.className = 'opt-desc';
-        desc.textContent = '· ' + item.desc;
-        name.appendChild(desc);
-      }
-
-      row.append(input, name);
-
-      if (item.tag) {
-        const tag = document.createElement('span');
-        tag.className = 'opt-tag';
-        tag.textContent = item.tag;
-        row.appendChild(tag);
-      }
-      row.appendChild(document.createElement('span')).className = 'opt-na';
-
-      input.addEventListener('change', () => {
-        if (input.checked) choose(item.id);
-      });
-
-      wrap.appendChild(row);
-    }
-  }
-
-  function decorateOptions() {
-    const status = lastStatus;
-    const available = status && Array.isArray(status.available) ? status.available : null;
-    const onVideo = !!(status && status.hasPlayer && status.onVideoPage);
-
-    for (const row of document.querySelectorAll('.opt')) {
-      const id = row.dataset.quality;
-      const na = row.querySelector('.opt-na');
-
-      row.classList.toggle('is-active', id === selected);
-      row.classList.remove('is-unavailable');
-
-      if (id === AUTO || !available || !onVideo) {
-        na.textContent = '';
-        continue;
-      }
-
-      const ok = available.includes(id);
-      row.classList.toggle('is-unavailable', !ok);
-      na.textContent = ok ? '' : t('optNotOffered', 'not offered');
-    }
-  }
-
-  function renderStatus(status) {
-    lastStatus = status || null;
-
-    const titleEl = $('videoTitle');
-    const currentEl = $('currentQuality');
-    const forcedEl = $('forcedQuality');
-    const hintEl = $('statusHint');
-
-    if (!status || !status.hasPlayer || !status.onVideoPage) {
-      titleEl.textContent = t('statusNoVideo', 'No video open');
-      currentEl.textContent = '—';
-      hintEl.hidden = false;
-      hintEl.textContent = t('hintNoPlayer', 'Open a YouTube video to see the resolutions it offers.');
-      decorateOptions();
-      return;
+        if (settings.maxQuality === 'highest') {
+            elements.qualityHint.textContent = 'Uses the highest resolution the video offers.';
+        } else {
+            elements.qualityHint.textContent = 'Never goes above ' +
+                core.getPreferenceLabel(settings.maxQuality) +
+                '. Falls back to the next best available quality.';
+        }
     }
 
-    titleEl.textContent = status.title || t('statusUntitled', 'YouTube video');
-
-    const cur = status.current ? label(status.current) : '';
-    currentEl.textContent = cur || '—';
-
-    // The forced value comes from extension storage, which the page cannot
-    // forge. Anything the engine reports is page-sourced and treated as
-    // advisory only, so a spoofed status cannot misrepresent your setting.
-    if (selected === AUTO) {
-      forcedEl.textContent = t('optAuto', 'Auto');
-    } else {
-      forcedEl.textContent = label(selected);
+    function qualityLabel(id) {
+        return core.formatQuality(id) || 'unknown quality';
     }
 
-    const fellBack = selected !== AUTO && status.applied && status.applied !== selected;
-    if (fellBack) {
-      hintEl.hidden = false;
-      hintEl.textContent = t('hintFallback', '$REQ$p is not offered here · using $USED$p', [
-        String(HEIGHT_OF[selected] || selected),
-        String(HEIGHT_OF[status.applied] || status.applied),
-      ]);
-    } else {
-      hintEl.hidden = true;
+    function qualityShort(id) {
+        return core.formatQualityShort(id) || '';
     }
 
-    decorateOptions();
-  }
+    function describeActive(status) {
+        const target = status.targetQuality ? qualityLabel(status.targetQuality) : null;
+        const current = status.currentQuality === 'auto'
+            ? 'auto'
+            : (status.currentQuality ? qualityLabel(status.currentQuality) : null);
 
-  async function updateBadge(quality) {
-    const action = API.action || API.browserAction;
-    if (!action || !action.setBadgeText) return;
-    const text = quality === AUTO ? '' : String(HEIGHT_OF[quality] || '');
-    try {
-      await call(action.setBadgeText.bind(action), { text });
-      if (action.setBadgeBackgroundColor) {
-        await call(action.setBadgeBackgroundColor.bind(action), { color: '#cc0000' });
-      }
-    } catch (_) {
-      /* badge is cosmetic */
+        if (target && current && current !== 'auto' && status.currentQuality !== status.targetQuality) {
+            return 'Switching from ' + current + ' to ' + target + '.';
+        }
+        if (target && current === 'auto') {
+            return 'YouTube is set to auto; enforcing ' + target + '.';
+        }
+        if (target) {
+            return 'Playing at ' + target + '.';
+        }
+        return 'Forcing your selected maximum resolution.';
     }
-  }
 
-  /* ------------------------------------------------------------------ *
-   * Actions
-   * ------------------------------------------------------------------ */
+    function describeFallback(status) {
+        const target = status.targetQuality ? qualityLabel(status.targetQuality) : null;
+        const selectedHeight = core.getPreferenceHeight(status.preference);
+        const selectedLabel = core.getPreferenceLabel(status.preference);
 
-  async function activeYouTubeTab() {
-    let tabs = [];
-    try {
-      tabs = (await tabsQuery({ active: true, currentWindow: true })) || [];
-    } catch (_) {
-      return null;
+        if (!target) {
+            return 'Your selected resolution is not available for this video.';
+        }
+        if (selectedHeight !== null && status.targetHeight !== null && selectedHeight > status.targetHeight) {
+            return selectedLabel + ' is not available for this video; using ' + target + '.';
+        }
+        if (selectedHeight !== null && status.targetHeight !== null && selectedHeight < status.targetHeight) {
+            return selectedLabel + ' is not offered; using the lowest available quality, ' + target + '.';
+        }
+        return 'Using ' + target + ', the closest available quality.';
     }
-    const tab = tabs[0];
-    if (!tab || typeof tab.id !== 'number') return null;
-    const url = tab.url || tab.pendingUrl || '';
-    if (!/^https?:\/\/([^/]*\.)?(youtube|youtube-nocookie)\.com\//.test(url)) return null;
-    return tab;
-  }
 
-  async function refreshStatus() {
-    const tab = await activeYouTubeTab();
-    if (!tab) {
-      renderStatus(null);
-      return;
+    function renderStatus(rawStatus) {
+        const status = core.sanitizeStatus(rawStatus, Date.now());
+
+        if (!settings.enabled || status.state === 'disabled') {
+            setStatusClass('disabled');
+            setText(elements.statusTitle, 'Extension paused');
+            setText(elements.statusDetail, 'Turn on Force quality to apply your selected resolution.');
+            setChip('OFF');
+            setMeta([]);
+            return;
+        }
+
+        setStatusClass(status.state);
+
+        if (status.state === 'active') {
+            setText(elements.statusTitle, 'Active');
+            setText(elements.statusDetail, describeActive(status));
+            setChip(status.currentQuality && status.currentQuality !== 'auto'
+                ? qualityShort(status.currentQuality)
+                : qualityShort(status.targetQuality));
+        } else if (status.state === 'fallback') {
+            setText(elements.statusTitle, 'Active · fallback');
+            setText(elements.statusDetail, describeFallback(status));
+            setChip(qualityShort(status.targetQuality));
+        } else if (status.state === 'waiting') {
+            let title = 'Connecting to YouTube…';
+            let detail = 'The extension is looking for the video player.';
+
+            if (status.reason === 'ad') {
+                title = 'Ad playing';
+                detail = 'Your resolution will be restored when the ad ends.';
+            } else if (status.reason === 'player-missing') {
+                title = 'Waiting for player';
+                detail = 'Start or resume the video; the extension will take over.';
+            } else if (status.reason === 'metadata-missing') {
+                title = 'Reading video quality…';
+                detail = 'The player is still loading its quality options.';
+            }
+
+            setText(elements.statusTitle, title);
+            setText(elements.statusDetail, detail);
+            setChip(qualityShort(status.targetQuality));
+        } else if (status.state === 'inactive') {
+            setText(elements.statusTitle, 'No video detected');
+            setText(elements.statusDetail, 'Open a YouTube video to activate the extension.');
+            setChip('');
+        } else {
+            setText(elements.statusTitle, "Couldn't change quality");
+            setText(elements.statusDetail, status.targetQuality
+                ? 'YouTube refused ' + qualityLabel(status.targetQuality) +
+                  '. Try a lower resolution or reload the video.'
+                : 'Try a lower resolution or reload the video.');
+            setChip(qualityShort(status.targetQuality));
+        }
+
+        const metaLines = [];
+        if (status.currentQuality) {
+            metaLines.push({
+                label: 'Playing',
+                value: status.currentQuality === 'auto' ? 'auto (not reported)' : qualityLabel(status.currentQuality)
+            });
+        }
+        if (status.availableHeights.length > 0) {
+            metaLines.push({
+                label: 'Available',
+                values: status.availableHeights.map(function (height) {
+                    const level = core.getQualityByHeight(height);
+                    return level ? level.label : null;
+                }).filter(Boolean)
+            });
+        }
+
+        setMeta(metaLines);
     }
-    const status = await sendToTab(tab.id, { fyr: NS, cmd: 'status' });
-    if (!status) {
-      renderStatus({ hasPlayer: false, onVideoPage: true, available: [], current: '' });
-      $('statusHint').hidden = false;
-      $('statusHint').textContent = t('hintReload', 'Reload that YouTube tab to activate the extension there.');
-      return;
+
+    function isYouTubeUrl(url) {
+        if (typeof url !== 'string' || url.length === 0) return false;
+        try {
+            return /(^|\.)youtube\.com$/i.test(new URL(url).hostname);
+        } catch (_) {
+            return false;
+        }
     }
-    renderStatus(status);
-  }
 
-  async function choose(quality) {
-    selected = quality;
-    await storageSet({ forcedQuality: quality });
-    await updateBadge(quality);
-    decorateOptions();
-
-    // Nudge every YouTube tab so the change is visible immediately.
-    // Storage change events reach the rest on their own; this just makes the
-    // tab the user is looking at react now.
-    await broadcast({ fyr: NS, cmd: 'apply', quality });
-    await refreshStatus();
-  }
-
-  async function broadcast(message) {
-    try {
-      const tabs =
-        (await tabsQuery({ url: ['*://*.youtube.com/*', '*://*.youtube-nocookie.com/*'] })) || [];
-      for (const tab of tabs) {
-        if (typeof tab.id === 'number') sendToTab(tab.id, message);
-      }
-    } catch (_) {
-      /* not critical — storage events already propagate the change */
+    function renderDisconnected(tab) {
+        if (tab && isYouTubeUrl(tab.url)) {
+            setStatusClass('error');
+            setText(elements.statusTitle, 'Reload this page');
+            setText(elements.statusDetail, 'The extension was installed or updated. Reload YouTube to activate it.');
+            setChip('');
+        } else {
+            setStatusClass('inactive');
+            setText(elements.statusTitle, 'Open a YouTube video');
+            setText(elements.statusDetail, 'This extension only runs on youtube.com.');
+            setChip('');
+        }
+        setMeta([]);
     }
-  }
 
-  async function reapplyAll() {
-    const btn = $('reapply');
-    btn.classList.remove('spin');
-    void btn.offsetWidth; // restart the animation
-    btn.classList.add('spin');
-    await broadcast({ fyr: NS, cmd: 'reapply' });
-    await refreshStatus();
-  }
+    function withTimeout(promise, timeoutMs) {
+        return new Promise(function (resolve, reject) {
+            let settled = false;
+            const timer = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                reject(new Error('timeout'));
+            }, timeoutMs);
 
-  /* ------------------------------------------------------------------ *
-   * Boot
-   * ------------------------------------------------------------------ */
+            Promise.resolve(promise).then(function (value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(value);
+            }, function (error) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+    }
 
-  async function init() {
-    localize();
+    async function getActiveTab() {
+        try {
+            const tabs = await api.tabs.query({ active: true, currentWindow: true });
+            return Array.isArray(tabs) && tabs.length > 0 ? tabs[0] : null;
+        } catch (_) {
+            return null;
+        }
+    }
 
-    const data = await storageGet({ forcedQuality: AUTO });
-    const saved = data.forcedQuality;
-    selected =
-      typeof saved === 'string' && Object.prototype.hasOwnProperty.call(HEIGHT_OF, saved) ? saved : AUTO;
+    async function requestStatus(tabId) {
+        try {
+            const response = await withTimeout(
+                api.tabs.sendMessage(tabId, { type: MESSAGE.GET_STATUS }),
+                REQUEST_TIMEOUT_MS
+            );
+            return response && response.ok && response.status ? response.status : null;
+        } catch (_) {
+            return null;
+        }
+    }
 
-    renderOptions();
-    await updateBadge(selected);
-    decorateOptions();
-    await refreshStatus();
+    async function refreshStatus() {
+        if (refreshInFlight) return;
+        refreshInFlight = true;
 
-    $('reapply').addEventListener('click', reapplyAll);
+        try {
+            const tab = await getActiveTab();
+            if (!tab || typeof tab.id !== 'number') {
+                renderDisconnected(null);
+                return;
+            }
 
-    // Keep the status in sync when the user changes tabs while the popup stays open.
-    if (API.tabs.onActivated) {
-      API.tabs.onActivated.addListener(() => {
+            const status = await requestStatus(tab.id);
+            if (status) {
+                renderStatus(status);
+            } else {
+                renderDisconnected(tab);
+            }
+        } finally {
+            refreshInFlight = false;
+        }
+    }
+
+    async function loadSettings() {
+        try {
+            const stored = await api.storage.local.get(core.DEFAULT_SETTINGS);
+            settings = core.sanitizeSettings(stored);
+        } catch (_) {
+            settings = core.sanitizeSettings(core.DEFAULT_SETTINGS);
+            setFooter("Couldn't load saved settings", true);
+        }
+        renderSettings();
+    }
+
+    async function persistSettings() {
+        try {
+            await api.storage.local.set({
+                enabled: settings.enabled,
+                maxQuality: settings.maxQuality
+            });
+            setFooter('Settings are saved automatically', false);
+        } catch (_) {
+            setFooter("Couldn't save settings", true);
+        }
+    }
+
+    function onToggleClick() {
+        settings = core.sanitizeSettings({
+            enabled: !settings.enabled,
+            maxQuality: settings.maxQuality
+        });
+        renderSettings();
+        persistSettings().then(refreshStatus);
+    }
+
+    function onQualityChange() {
+        settings = core.sanitizeSettings({
+            enabled: settings.enabled,
+            maxQuality: elements.quality.value
+        });
+        renderSettings();
+        persistSettings().then(refreshStatus);
+    }
+
+    function onStorageChanged(changes, areaName) {
+        if (areaName !== 'local') return;
+        if (!changes || (!changes.enabled && !changes.maxQuality)) return;
+
+        settings = core.sanitizeSettings({
+            enabled: changes.enabled ? changes.enabled.newValue : settings.enabled,
+            maxQuality: changes.maxQuality ? changes.maxQuality.newValue : settings.maxQuality
+        });
+        renderSettings();
         refreshStatus();
-      });
     }
-  }
 
-  document.addEventListener('DOMContentLoaded', init);
+    function init() {
+        populateQualityOptions();
+
+        try {
+            setText(elements.version, 'v' + api.runtime.getManifest().version);
+        } catch (_) {
+            setText(elements.version, '');
+        }
+
+        elements.toggle.addEventListener('click', onToggleClick);
+        elements.quality.addEventListener('change', onQualityChange);
+
+        if (api.storage.onChanged && typeof api.storage.onChanged.addListener === 'function') {
+            api.storage.onChanged.addListener(onStorageChanged);
+        }
+
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) refreshStatus();
+        });
+
+        window.addEventListener('pagehide', function () {
+            if (refreshTimer !== null) clearInterval(refreshTimer);
+            if (footerResetTimer !== null) clearTimeout(footerResetTimer);
+        });
+
+        loadSettings().then(refreshStatus);
+        refreshTimer = setInterval(refreshStatus, POLL_INTERVAL_MS);
+    }
+
+    init();
 })();
