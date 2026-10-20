@@ -6,6 +6,7 @@
 
 <div align="center">
 
+[![Firefox Add-on](https://img.shields.io/amo/v/force-youtube-resolution?label=Firefox%20Add-on&logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/force-youtube-resolution/)
 [![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest%20V3-EA4335?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![Firefox MV3](https://img.shields.io/badge/Firefox-Manifest%20V3-FF7139?logo=firefox-browser&logoColor=white)](https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/manifest_version)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
@@ -64,18 +65,36 @@ saved automatically.
 
 ## Install
 
-Download the latest packages from the
-[**Releases page**](https://github.com/Rob1ts/Force-YouTube-Resolution-Extension/releases/latest).
+### Firefox
 
-| Download | Use |
-| --- | --- |
-| `force-youtube-resolution-firefox-2.0.0.xpi` | Firefox 128+ (unsigned) |
-| `force-youtube-resolution-chromium-2.0.0.crx` | Chromium 111+ |
-| `force-youtube-resolution-chromium-2.0.0.zip` | Chromium unpacked build |
-| `force-youtube-resolution-2.0.0-source.zip` | Complete corresponding source |
+**Install the signed build from Mozilla Add-ons:**
+
+[**Force YouTube Resolution on addons.mozilla.org**](https://addons.mozilla.org/en-US/firefox/addon/force-youtube-resolution/)
+
+1. Open the AMO listing.
+2. Click **Add to Firefox** and confirm the install.
+3. Open a YouTube video and use the toolbar popup.
+
+Mozilla signs and distributes the AMO build, so it installs permanently and
+updates automatically. Requires Firefox **128 or newer**.
+
+#### Temporary testing builds
+
+The XPI attached to GitHub releases is **unsigned**. To test a build without
+signing it:
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Choose **Load Temporary Add-on**.
+3. Select `force-youtube-resolution-firefox-2.0.0.xpi`.
+4. Open a YouTube video. Firefox removes temporary add-ons when it restarts.
+
+Use the [AMO listing](https://addons.mozilla.org/en-US/firefox/addon/force-youtube-resolution/)
+for permanent installation.
 
 ### Chromium / Chrome / Edge / Brave / Opera / Vivaldi
 
+Download the latest Chromium package from the
+[**Releases page**](https://github.com/Rob1ts/Force-YouTube-Resolution-Extension/releases/latest).
 The unpacked ZIP is the most reliable installation method:
 
 1. Download and unzip `force-youtube-resolution-chromium-2.0.0.zip`.
@@ -93,30 +112,20 @@ store installation.
 Requires Chromium **111 or newer** because the player bridge uses
 `world: "MAIN"` content scripts.
 
-### Firefox
+### Release downloads
 
-The XPI is **unsigned**.
-
-**Temporary installation (works in every Firefox):**
-
-1. Open `about:debugging#/runtime/this-firefox`.
-2. Choose **Load Temporary Add-on**.
-3. Select `force-youtube-resolution-firefox-2.0.0.xpi`.
-4. Open a YouTube video. Firefox removes temporary add-ons when it restarts.
-
-**Permanent installation:** release Firefox only installs Mozilla-signed
-add-ons. Upload the XPI to [addons.mozilla.org](https://addons.mozilla.org/developers/)
-as an unlisted add-on, then install the signed copy returned by AMO. Keep the
-add-on ID `force-youtube-resolution@local` so future updates
-and settings remain associated.
-
-Requires Firefox **128 or newer**.
+| Download | Use |
+| --- | --- |
+| `force-youtube-resolution-firefox-2.0.0.xpi` | Firefox 128+ (unsigned; use AMO instead) |
+| `force-youtube-resolution-chromium-2.0.0.crx` | Chromium 111+ |
+| `force-youtube-resolution-chromium-2.0.0.zip` | Chromium unpacked build |
+| `force-youtube-resolution-2.0.0-source.zip` | Complete corresponding source |
 
 ### Upgrading from v1.x
 
-Version 2 keeps the Firefox add-on ID (`force-youtube-resolution@local`), so a
-signed v2 XPI updates the existing Firefox add-on in place and preserves its
-settings.
+Version 2 keeps the Firefox add-on ID (`force-youtube-resolution@local`), so the
+AMO build updates the existing Firefox add-on in place and preserves its
+settings. Firefox normally applies this update automatically.
 
 The Chromium extension ID has changed from
 `imgigdnmkglkofpdomceeenaalemkjdk` to
